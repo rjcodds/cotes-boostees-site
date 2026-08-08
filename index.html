@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RJC Boost — Cotes boostées & value betting | Sélection quotidienne</title>
-<meta name="description" content="RJC Boost sélectionne les cotes boostées à réelle valeur mathématique, publie un bilan de bankroll transparent chaque semaine, et accompagne sur les bonus bookmakers (Celsius, BigClash). 18+, jeu responsable.">
+<meta name="description" content="RJC Boost sélectionne les cotes boostées à réelle valeur mathématique, publie un bilan de bankroll transparent chaque semaine, et accompagne sur les bonus bookmakers (CelsiusCasino.com, BigClash1.com). 18+, jeu responsable.">
 <meta name="robots" content="index, follow">
 <link rel="canonical" href="https://rjcodds.github.io/cotes-boostees-site/">
 
@@ -110,116 +110,6 @@
   .hero-grid{display:grid;grid-template-columns:1.15fr 0.85fr;gap:40px;align-items:center;padding-bottom:50px;position:relative;z-index:1;}
   @media (max-width:850px){.hero-grid{grid-template-columns:1fr;}}
 
-  /* PHONE MOCKUP — PlikPok -> notif Tvgram -> message -> Uniclic -> pari -> confirmation -> outro */
-  .phone-wrap{display:flex;flex-direction:column;align-items:center;}
-  .sb-label{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--gold);text-transform:uppercase;letter-spacing:.1em;margin:0 0 16px;display:flex;align-items:center;gap:8px;}
-  .sb-label .rdot{width:6px;height:6px;border-radius:50%;background:var(--red);animation:pulse 1s infinite;}
-  .phone-frame{width:250px;height:520px;background:#0d0d0d;border-radius:44px;padding:10px;box-shadow:0 20px 50px rgba(0,0,0,0.5);position:relative;border:1px solid #2a2a2a;}
-  .phone-frame::after{content:'';position:absolute;inset:0;border-radius:44px;background:linear-gradient(115deg,rgba(255,255,255,0.10) 0%,rgba(255,255,255,0.03) 18%,rgba(255,255,255,0) 32%,rgba(255,255,255,0) 78%,rgba(255,255,255,0.05) 100%);pointer-events:none;z-index:8;}
-  .phone-island{position:absolute;top:16px;left:50%;transform:translateX(-50%);width:82px;height:24px;background:#000;border-radius:20px;z-index:9;box-shadow:inset 0 0 0 1px rgba(255,255,255,0.04);}
-  .phone-screen{width:100%;height:100%;background:var(--panel);border-radius:34px;overflow:hidden;position:relative;}
-  .ph-scene{position:absolute;inset:0;padding:42px 15px 18px;opacity:0;transform:scale(.97);transition:opacity .35s ease,transform .35s ease;display:flex;flex-direction:column;pointer-events:none;}
-  .ph-scene.active{opacity:1;transform:scale(1);pointer-events:auto;}
-  @keyframes iconpop{0%{transform:scale(.3);opacity:0;}60%{transform:scale(1.12);opacity:1;}100%{transform:scale(1);}}
-
-  /* Status bar iOS persistante — visible au-dessus de toutes les scènes */
-  .ph-statusbar{position:absolute;top:0;left:0;right:0;height:38px;padding:0 24px 0 22px;display:flex;align-items:center;justify-content:space-between;z-index:4;color:var(--paper);font-family:"Inter",sans-serif;pointer-events:none;transition:opacity .3s ease;}
-  .ph-statusbar .ph-sb-time{font-size:13px;font-weight:600;letter-spacing:-.01em;}
-  .ph-statusbar .ph-sb-icons{display:flex;align-items:center;gap:5px;}
-  .ph-sb-signal{display:flex;align-items:flex-end;gap:1.5px;height:9px;}
-  .ph-sb-signal span{width:2.5px;background:currentColor;border-radius:1px;}
-  .ph-sb-signal span:nth-child(1){height:35%;}
-  .ph-sb-signal span:nth-child(2){height:58%;}
-  .ph-sb-signal span:nth-child(3){height:78%;}
-  .ph-sb-signal span:nth-child(4){height:100%;}
-  .ph-sb-battery{width:21px;height:10.5px;border:1px solid currentColor;border-radius:2.5px;position:relative;opacity:.95;}
-  .ph-sb-battery::after{content:'';position:absolute;right:-3px;top:3px;width:1.5px;height:4.5px;background:currentColor;border-radius:0 1px 1px 0;}
-  .ph-sb-battery i{position:absolute;top:1.5px;left:1.5px;bottom:1.5px;width:70%;background:currentColor;border-radius:1px;display:block;}
-
-  /* Écran de verrouillage — s'allume à l'arrivée de la notification */
-  .ph-lock{background:linear-gradient(180deg,#1a2438,#0d1420);position:relative;}
-  .ph-lock-off{position:absolute;inset:0;background:#000;z-index:6;animation:wakeup 1.1s ease forwards;}
-  .ph-lock.active .ph-lock-off{animation:wakeup 1.1s ease forwards;}
-  @keyframes wakeup{0%{opacity:1;}45%{opacity:1;}100%{opacity:0;}}
-  .ph-lockclock{font-family:"Space Grotesk",sans-serif;font-size:44px;font-weight:600;text-align:center;color:var(--paper);margin-top:10px;}
-  .ph-lockdate{text-align:center;font-size:12px;color:var(--paper-dim);margin-bottom:30px;}
-
-  /* Notification qui tombe sur l'écran de verrouillage */
-  .ph-push-banner{position:relative;background:rgba(255,255,255,0.08);backdrop-filter:blur(10px);border-radius:14px;padding:11px;display:flex;gap:9px;align-items:flex-start;z-index:3;transform:translateY(-140%);opacity:0;transition:transform .45s cubic-bezier(.2,.8,.2,1) .6s, opacity .3s ease .6s;}
-  .ph-lock.active .ph-push-banner{transform:translateY(0);opacity:1;}
-  .ph-push-icon{width:26px;height:26px;border-radius:7px;background:var(--blue);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;color:#fff;}
-  .ph-push-title{font-weight:700;font-size:11.5px;color:#fff;margin-bottom:1px;}
-  .ph-push-text{font-size:10.5px;color:#d8d8d8;line-height:1.3;}
-
-  /* App messagerie (Tvgram) — reproduit vos vrais posts */
-  .ph-tvgram{background:#0f1420;padding:16px 13px;}
-  .ph-tg-header{display:flex;align-items:center;gap:8px;font-weight:700;font-size:12.5px;padding-bottom:10px;border-bottom:1px solid var(--line);margin-bottom:10px;}
-  .ph-tg-bubble{background:var(--panel-2);border-radius:12px;padding:11px;font-size:10.5px;line-height:1.55;overflow-y:hidden;}
-  .ph-tg-title{font-weight:700;font-size:12px;margin-bottom:6px;}
-  .ph-tg-odds{display:flex;align-items:center;gap:7px;font-family:"IBM Plex Mono",monospace;font-size:12px;margin:5px 0 7px;}
-  .ph-tg-odds .old{color:var(--paper-dim);text-decoration:line-through;}
-  .ph-tg-odds .new{color:var(--gold);font-weight:700;font-size:14px;}
-  .ph-tg-tiers{color:var(--paper-dim);margin:5px 0;}
-  .ph-tg-tiers div{margin-bottom:1px;}
-  .ph-tg-meta{color:var(--paper-dim);margin-top:5px;}
-  .ph-tg-risk{color:#e8b84b;margin-top:4px;}
-  .ph-tap-hint{text-align:center;font-size:10.5px;color:var(--paper-dim);margin-top:auto;padding-top:8px;animation:pulse 1.4s infinite;}
-
-  /* Transition d'ouverture */
-  .ph-opening{background:#06251a;align-items:center;justify-content:center;}
-  .ph-opening-icon{width:64px;height:64px;border-radius:18px;background:var(--green);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:700;color:#06251a;animation:iconpop .5s ease;}
-  .ph-opening-label{margin-top:14px;font-size:12px;color:var(--paper-dim);text-align:center;}
-
-  /* App Uniclic */
-  .ph-uniclic{background:#0a0f0c;padding-bottom:10px;}
-  .ph-un-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
-  .ph-un-logo{font-family:"Space Grotesk",sans-serif;font-weight:700;font-size:12px;letter-spacing:.02em;display:flex;align-items:center;gap:5px;}
-  .ph-un-logo span{color:var(--gold);}
-  .ph-un-balance{font-family:"IBM Plex Mono",monospace;font-size:12px;background:var(--panel-2);padding:5px 9px;border-radius:8px;}
-  .ph-un-section{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;color:var(--paper-dim);margin-bottom:10px;}
-  .ph-un-white-card{background:#f4f4f2;border-radius:12px;padding:13px;color:#111;}
-  .ph-un-white-top{font-size:10.5px;font-weight:700;color:#333;margin-bottom:2px;}
-  .ph-un-white-time{font-size:9.5px;color:#777;margin-bottom:9px;}
-  .ph-un-teams{font-weight:700;font-size:13px;text-align:center;margin-bottom:8px;}
-  .ph-un-desc{font-size:9.5px;color:#444;line-height:1.4;margin-bottom:11px;}
-  .ph-un-btn{width:100%;background:var(--green);color:#06251a;border:none;border-radius:8px;padding:12px;font-weight:700;font-size:14px;font-family:"IBM Plex Mono",monospace;}
-  .ph-un-nav{margin-top:auto;display:flex;justify-content:space-between;font-size:10px;color:var(--paper-dim);padding-top:10px;border-top:1px solid var(--line);}
-
-  /* Panier Uniclic */
-  .ph-slip{background:#0a0f0c;justify-content:flex-end;padding:0;}
-  .ph-slip-sheet{background:var(--panel-2);border-radius:20px 20px 0 0;padding:18px 16px 20px;border:1px solid var(--line);border-bottom:none;transform:translateY(100%);transition:transform .4s cubic-bezier(.2,.8,.2,1);}
-  .ph-slip.active .ph-slip-sheet{transform:translateY(0);}
-  .ph-slip-title{font-weight:700;font-size:13px;margin-bottom:10px;}
-  .ph-slip-recap{font-size:11.5px;color:var(--paper-dim);margin-bottom:2px;}
-  .ph-slip-odds{font-family:"IBM Plex Mono",monospace;color:var(--gold);font-weight:700;font-size:15px;margin-bottom:14px;}
-  .ph-slip-row{display:flex;align-items:center;justify-content:space-between;background:var(--panel);border-radius:10px;padding:10px 12px;margin-bottom:10px;}
-  .ph-slip-label{font-size:11.5px;color:var(--paper-dim);}
-  .ph-slip-stake{font-family:"IBM Plex Mono",monospace;font-weight:700;font-size:16px;}
-  .ph-slip-gain{display:flex;justify-content:space-between;font-size:11.5px;color:var(--paper-dim);margin-bottom:14px;}
-  .ph-slip-gain strong{color:var(--green);font-family:"IBM Plex Mono",monospace;}
-  .ph-slip-btn{width:100%;background:var(--green);color:#06251a;border:none;border-radius:10px;padding:13px;font-weight:700;font-size:14px;}
-
-  /* Confirmation */
-  .ph-confirm{background:#0a0f0c;align-items:center;justify-content:center;text-align:center;}
-  .ph-confirm-check{width:60px;height:60px;border-radius:50%;background:var(--green);display:flex;align-items:center;justify-content:center;font-size:28px;color:#06251a;animation:iconpop .4s ease;}
-  .ph-confirm-title{margin-top:14px;font-weight:700;font-size:14px;}
-  .ph-confirm-sub{margin-top:4px;font-size:11.5px;color:var(--paper-dim);}
-
-  /* Outro — verrouillage avec marque */
-  .ph-outro{background:linear-gradient(180deg,#141c2e,#0a0e17);align-items:center;justify-content:center;text-align:center;position:relative;overflow:hidden;}
-  .ph-outro-chart{position:absolute;inset:0;opacity:.4;}
-  .ph-outro-chart svg{width:100%;height:100%;}
-  .ph-outro-chart path{fill:none;stroke:var(--green);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:520;stroke-dashoffset:520;}
-  .ph-outro.active .ph-outro-chart path{animation:drawchart 2.4s ease forwards;}
-  @keyframes drawchart{to{stroke-dashoffset:0;}}
-  .ph-outro-content{position:relative;z-index:2;}
-  .ph-outro-dot{width:12px;height:12px;border-radius:50%;background:var(--green);margin:0 auto 10px;box-shadow:0 0 14px var(--green);}
-  .ph-outro-brand{font-family:"Space Grotesk",sans-serif;font-weight:700;font-size:20px;letter-spacing:.03em;margin-bottom:10px;}
-  .ph-outro-cta{font-size:13px;color:var(--gold);font-weight:600;max-width:190px;margin:0 auto;line-height:1.4;}
-
-  .sb-stake{margin-top:18px;padding-top:14px;border-top:1px dashed var(--line);font-size:12.5px;color:var(--paper-dim);text-align:center;max-width:280px;}
-  .sb-stake strong{color:var(--paper);font-family:"IBM Plex Mono",monospace;}
-
   /* PREVIEW STRIP */
   .preview-shell{border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--panel);padding:26px 0;position:relative;z-index:1;}
   .preview-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:start;}
@@ -240,6 +130,8 @@
   .preview-dot{width:6px;height:6px;border-radius:50%;background:var(--line);border:none;padding:0;cursor:pointer;transition:background .15s,transform .15s;}
   .preview-dot:hover{background:var(--paper-dim);}
   .preview-dot.active{background:var(--gold);transform:scale(1.3);}
+  .preview-dot.locked{background:rgba(217,164,65,.3);}
+  .preview-dot.locked.active{background:var(--gold);}
   .preview-dot:focus-visible{outline:2px solid var(--blue);outline-offset:2px;}
   .preview-caption{text-align:center;font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--paper-dim);letter-spacing:.03em;margin:12px 0 0;}
   .p-card{
@@ -269,6 +161,10 @@
   .p-card.depth-3{filter:blur(1.6px) brightness(.7);}
   .p-card.locked{display:flex;align-items:center;justify-content:center;text-align:center;color:var(--paper-dim);font-size:12px;background:transparent;border-style:dashed;min-height:112px;}
   .p-card.centered{position:static;transform:none !important;opacity:1 !important;filter:none !important;margin:0 auto;width:auto;max-width:280px;min-height:112px;}
+  .p-card.blurred{position:absolute;}
+  .p-card.blurred .p-top,.p-card.blurred .p-match,.p-card.blurred .p-bet,.p-card.blurred .p-odds-row{filter:blur(4px);user-select:none;opacity:.75;}
+  .p-blur-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:rgba(10,14,23,.6);border-radius:12px;font-size:22px;text-align:center;z-index:2;}
+  .p-blur-overlay span{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--paper-dim);letter-spacing:.03em;text-transform:uppercase;max-width:150px;line-height:1.4;}
   @media (prefers-reduced-motion:reduce){.p-card{transition:none !important;}}
 
   main{position:relative;z-index:1;}
@@ -437,134 +333,25 @@
   <div class="wrap hero-grid">
     <div>
       <p class="eyebrow"><span class="pulse"></span>~50 cotes boostées analysées / semaine</p>
-      <h1 class="disp">La <span class="accent shimmer-text">value</span>, filtrée avant de parier.</h1>
-      <p class="hero-sub">Sélection de cotes boostées à forte valeur chez plusieurs bookmakers, suivi de bankroll transparent publié chaque semaine, et accompagnement pour profiter au mieux des bonus disponibles.</p>
+      <h1 class="disp">On ne parie pas plus souvent.<br>On parie quand <span class="accent shimmer-text">le bookmaker</span> se trompe.</h1>
+      <p class="hero-sub">Je suis un parieur largement rentable depuis 8 ans grâce aux cotes boostées et à l'exploitation des bonus en freebet. Je vous partage simplement ma sélection de cotes boostées chaque jour dans le canal Telegram privé. L'exploitation de ces cotes m'a permis de générer parfois plusieurs centaines d'euros par mois avec une mise moyenne de 12€. Dans le canal, je vous accompagne aussi pour obtenir le plus de freebets possible via les promotions/bonus. Je vous aide à gérer votre bankroll et convertir vos freebets, et encore beaucoup de nouvelles choses à venir 🎁</p>
       <div class="cta-row">
-        <a class="btn-primary magnetic" href="#offres">Profiter du bonus Celsius (jusqu'à 200€) →</a>
-        <a class="btn-secondary magnetic" href="https://t.me/cbbooste" target="_blank" rel="noopener">Rejoindre le Telegram gratuit</a>
+        <a class="btn-primary magnetic" href="https://celsius.games/pEuLPHXXjO" target="_blank" rel="noopener">Inscris-toi dès maintenant via ce lien pour obtenir jusqu'à 200€ de freebet avec ton premier dépôt. Voir conditions ci-dessous.</a>
+        <a class="btn-secondary magnetic" href="https://t.me/cbbooste" target="_blank" rel="noopener">Rejoindre le canal Telegram public gratuit pour avoir un aperçu</a>
       </div>
       <p class="microcopy">18+ · Jeu responsable · Aucune garantie de gain</p>
     </div>
 
-    <div class="phone-wrap">
-      <p class="sb-label"><span class="rdot"></span>Comment fonctionne une alerte</p>
-      <div class="phone-frame">
-        <div class="phone-island"></div>
-        <div class="phone-screen">
-
-          <div class="ph-statusbar" id="ph-statusbar-persistent">
-            <span class="ph-sb-time">14:32</span>
-            <span class="ph-sb-icons">
-              <span class="ph-sb-signal"><span></span><span></span><span></span><span></span></span>
-              <svg width="15" height="11" viewBox="0 0 15 11" fill="none"><path d="M7.5 9.3a1 1 0 100 2 1 1 0 000-2zM4.3 6.6a4.5 4.5 0 016.4 0 .6.6 0 00.85-.85 5.7 5.7 0 00-8.1 0 .6.6 0 00.85.85zM2 4.2a8 8 0 0111 0 .6.6 0 10.85-.85 9.2 9.2 0 00-12.7 0 .6.6 0 00.85.85z" fill="currentColor"/></svg>
-              <span class="ph-sb-battery"><i></i></span>
-            </span>
-          </div>
-
-          <div class="ph-scene ph-lock" id="ph-lock">
-            <div class="ph-lock-off"></div>
-            <div class="ph-statusbar" style="position:absolute;">
-              <span class="ph-sb-time">14:32</span>
-              <span class="ph-sb-icons">
-                <span class="ph-sb-signal"><span></span><span></span><span></span><span></span></span>
-                <svg width="15" height="11" viewBox="0 0 15 11" fill="none"><path d="M7.5 9.3a1 1 0 100 2 1 1 0 000-2zM4.3 6.6a4.5 4.5 0 016.4 0 .6.6 0 00.85-.85 5.7 5.7 0 00-8.1 0 .6.6 0 00.85.85zM2 4.2a8 8 0 0111 0 .6.6 0 10.85-.85 9.2 9.2 0 00-12.7 0 .6.6 0 00.85.85z" fill="currentColor"/></svg>
-                <span class="ph-sb-battery"><i></i></span>
-              </span>
-            </div>
-            <div class="ph-lockclock">14:32</div>
-            <div class="ph-lockdate">Vendredi 31 juillet</div>
-            <div class="ph-push-banner">
-              <div class="ph-push-icon">🎯</div>
-              <div>
-                <div class="ph-push-title">Tvgram · Cotes Boostées</div>
-                <div class="ph-push-text">COTE BOOSTÉE UNIBET ⚽ — Argentine - Suisse, Messi décisif, boostée à 2,55</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="ph-scene ph-tvgram" id="ph-tvgram">
-            <div class="ph-tg-header">🎯 Cotes boostées</div>
-            <div class="ph-tg-bubble">
-              <div class="ph-tg-title">🏆 COTE BOOSTÉE UNIBET ⚽</div>
-              <div>Argentine 🇦🇷 - Suisse 🇨🇭</div>
-              <div style="color:var(--paper-dim);margin:3px 0;">CB - L.Messi décisif en 1ère mi-temps (remboursé si non titulaire / tps règ.) (2,25 -&gt; 2,55 / Mise max 50€) - 90 Mins</div>
-              <div class="ph-tg-odds"><span class="old">2,25</span><span>→</span><span class="new">2,55</span></div>
-              <div>💰 Mise</div>
-              <div class="ph-tg-tiers">
-                <div>• 25€ ➜ solde ≥ 300€</div>
-                <div>• 20€ ➜ 200€ ≤ solde &lt; 300€</div>
-                <div>• 15€ ➜ 100€ ≤ solde &lt; 200€</div>
-                <div>• 10€ ➜ solde &lt; 100€</div>
-              </div>
-              <div class="ph-tg-meta">❄️ Mise utilisée pour le bilan</div>
-              <div class="ph-tg-meta">⏳ Dispo jusqu'à 3h00 🚨</div>
-              <div class="ph-tg-risk">Jouer comporte des risques ⚠️</div>
-            </div>
-            <div class="ph-tap-hint">👆 Toucher pour parier</div>
-          </div>
-
-          <div class="ph-scene ph-opening" id="ph-opening-uniclic">
-            <div class="ph-opening-icon">UC</div>
-            <div class="ph-opening-label">Ouverture de Uniclic…</div>
-          </div>
-
-          <div class="ph-scene ph-uniclic" id="ph-uniclic">
-            <div class="ph-un-header">
-              <div class="ph-un-logo">🚀 <span>COTES BOOSTÉES</span></div>
-              <div class="ph-un-balance">437,00 €</div>
-            </div>
-            <div class="ph-un-section">AUJOURD'HUI</div>
-            <div class="ph-un-white-card">
-              <div class="ph-un-white-top">🌍 <span>Cotes Boostées Coupe du Monde 2026</span></div>
-              <div class="ph-un-white-time">Demain à 03h00</div>
-              <div class="ph-un-teams">Argentine 🇦🇷 - Suisse 🇨🇭</div>
-              <div class="ph-un-desc">CB - L.Messi décisif en 1ère mi-temps (remboursé si non titulaire / tps règ.) (2,25 -&gt; 2,55 / Mise max 50€) - 90 Mins</div>
-              <button class="ph-un-btn">Oui · 2,55</button>
-            </div>
-            <div class="ph-un-nav">
-              <span>🏠</span><span>⚽</span><span>🔴 Live</span><span>🎯 Défis</span><span>🃏</span>
-            </div>
-          </div>
-
-          <div class="ph-scene ph-slip" id="ph-slip">
-            <div class="ph-slip-sheet">
-              <div class="ph-slip-title">🎟️ Mon pari</div>
-              <div class="ph-slip-recap">Argentine 🇦🇷 - Suisse 🇨🇭</div>
-              <div class="ph-slip-recap">Messi décisif en 1ère mi-temps</div>
-              <div class="ph-slip-odds">Cote boostée : 2,55</div>
-              <div class="ph-slip-row">
-                <span class="ph-slip-label">Mise (palier : solde ≥ 300€)</span>
-                <span class="ph-slip-stake">25€</span>
-              </div>
-              <div class="ph-slip-gain">
-                <span>Gain potentiel</span>
-                <strong>63,75€</strong>
-              </div>
-              <button class="ph-slip-btn">Valider mon pari</button>
-            </div>
-          </div>
-
-          <div class="ph-scene ph-confirm" id="ph-confirm">
-            <div class="ph-confirm-check">✓</div>
-            <div class="ph-confirm-title">Pari confirmé</div>
-            <div class="ph-confirm-sub">Bonne chance 🍀</div>
-          </div>
-
-          <div class="ph-scene ph-outro" id="ph-outro">
-            <div class="ph-outro-chart">
-              <svg viewBox="0 0 220 460" preserveAspectRatio="none">
-                <path d="M0 400 L20 390 L40 405 L60 370 L80 380 L100 320 L120 340 L140 270 L160 290 L180 200 L200 220 L220 130"/>
-              </svg>
-            </div>
-            <div class="ph-outro-content">
-              <div class="ph-outro-dot"></div>
-              <div class="ph-outro-brand disp">RJC BOOST</div>
-              <div class="ph-outro-cta">Rejoins le groupe gratuitement dès maintenant →</div>
-            </div>
-          </div>
-
-        </div>
+    <div class="preview-public">
+      <div class="preview-stack-wrap" id="previewStackWrap">
+        <div class="preview-stack" id="preview-track"></div>
       </div>
+      <div class="preview-nav" id="previewNav" style="display:none;">
+        <button class="preview-nav-btn" id="previewPrev" aria-label="Cote précédente">←</button>
+        <div class="preview-dots" id="previewDots"></div>
+        <button class="preview-nav-btn" id="previewNext" aria-label="Cote suivante">→</button>
+      </div>
+      <p class="preview-caption" id="previewCaption"></p>
     </div>
   </div>
 </header>
@@ -573,20 +360,6 @@
   <div class="wrap">
     <div class="preview-grid">
       <div class="preview-public">
-        <div class="preview-head">
-          <h3 class="disp">🎁 La cote offerte du jour</h3>
-          <p class="preview-gift-text">Offerte gratuitement, sans inscription. Le canal privé en reçoit 5 à 6 comme celle-ci chaque jour, parfois plus, dès leur sortie.</p>
-        </div>
-        <div class="preview-stack-wrap" id="previewStackWrap">
-          <div class="preview-stack" id="preview-track"></div>
-        </div>
-        <div class="preview-nav" id="previewNav" style="display:none;">
-          <button class="preview-nav-btn" id="previewPrev" aria-label="Cote précédente">←</button>
-          <div class="preview-dots" id="previewDots"></div>
-          <button class="preview-nav-btn" id="previewNext" aria-label="Cote suivante">→</button>
-        </div>
-        <p class="preview-caption" id="previewCaption"></p>
-
         <div class="preview-proof reveal">
           <svg class="preview-proof-chart" viewBox="0 0 400 140" preserveAspectRatio="none" aria-hidden="true">
             <path d="M0 120 L45 108 L90 118 L135 78 L180 92 L225 55 L270 68 L315 30 L360 42 L400 12"/>
@@ -604,10 +377,10 @@
         <div class="price"><span class="amount">14,99€</span> / mois</div>
         <p class="price-annual">À partir de <strong>10,75€/mois</strong> avec l'abonnement annuel</p>
         <div class="promo-code"></div>
-        <div class="premium-perk">🎁 1 an d'accès offert en s'inscrivant via notre lien chez Big Clash, 6 mois en s'inscrivant via notre lien Celsius — cumulable</div>
+        <div class="premium-perk">🎁 1 an d'accès offert en s'inscrivant via notre lien chez BigClash1.com, 6 mois en s'inscrivant via notre lien CelsiusCasino.com — cumulable</div>
         <p class="premium-stat">Déjà +1 951,80€ de bénéfice cumulé pour un ROI de 10,95% sur la sélection premium.</p>
         <ul>
-          <li>Toutes les cotes boostées sur Betclic, Unibet, Winamax, Celsius et BigClash, 5-6/jour et parfois bien plus, dès leur sortie</li>
+          <li>Toutes les cotes boostées sur Betclic, Unibet, Winamax, CelsiusCasino.com et BigClash1.com, 5-6/jour et parfois bien plus, dès leur sortie</li>
           <li>Aide à la gestion de bankroll</li>
           <li>Aide pour utiliser les bonus (comment miser le dépôt, le freebet)</li>
           <li>Suivi de bankroll détaillé, comme le bilan ci-dessus</li>
@@ -615,7 +388,7 @@
           <li>Aide personnalisée en cas de besoin</li>
         </ul>
         <a class="btn-primary" style="width:100%;justify-content:center;" href="https://t.me/cbbooste" target="_blank" rel="noopener">Voir l'abonnement</a>
-        <p class="microcopy" style="text-align:center;margin:10px 0 0;">Si vous vous abonnez au canal privé <strong>sans passer par un lien d'affiliation</strong> (BigClash ou Celsius), l'inscription se fait via le lien épinglé dans le canal public. Un souci ? Écrivez-moi en message privé sur Telegram.</p>
+        <p class="microcopy" style="text-align:center;margin:10px 0 0;">Si vous vous abonnez au canal privé <strong>sans passer par un lien d'affiliation</strong> (BigClash1.com ou CelsiusCasino.com), l'inscription se fait via le lien épinglé dans le canal public. Un souci ? Écrivez-moi en message privé sur Telegram.</p>
       </div>
     </div>
   </div>
@@ -649,16 +422,16 @@
         <div class="offer-card reveal" style="--accent:var(--celsius);">
           <svg class="sport-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2v20M12 2l2.5 2.5M12 2 9.5 4.5M12 22l2.5-2.5M12 22 9.5 19.5M4 7l16 10M4 7l3.3.7M4 7l1 3.2M20 17l-3.3-.7M20 17l-1-3.2M4 17l16-10M4 17l3.3-.7M4 17l1-3.2M20 7l-3.3.7M20 7l-1 3.2"/></svg>
           <span class="perk">● Jusqu'à 200€ de freebet</span>
-          <div class="bmk disp">Celsius</div>
+          <div class="bmk disp">CelsiusCasino.com</div>
           <div class="cond">Bonus à l'ouverture de compte</div>
           <div class="bonus">200€</div>
-          <div class="cond">Freebet de 50% de votre dépôt (jusqu'à 200€), dépôt minimum 10€. Cette offre revient régulièrement pour les grosses affiches sportives — en plus de ma sélection de cotes boostées Celsius. <strong>En vous inscrivant via ce lien, l'accès à notre service de cotes boostées (14,99€/mois) vous est offert.</strong></div>
+          <div class="cond">Freebet de 50% de votre dépôt (jusqu'à 200€), dépôt minimum 10€. Cette offre revient régulièrement pour les grosses affiches sportives — en plus de ma sélection de cotes boostées CelsiusCasino.com. <strong>En vous inscrivant via ce lien, l'accès à notre service de cotes boostées (14,99€/mois) vous est offert.</strong></div>
 
           <div class="offer-steps">
             <p class="offer-steps-label">À lire avant de vous inscrire</p>
             <ol>
-              <li>Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour bénéficier des bonus en freebet. <strong>6 mois d'accès offerts à mon canal privé en s'inscrivant via notre lien Celsius</strong> (cumulable avec l'inscription Big Clash).</li>
-              <li>Celsius propose aussi des cotes boostées « classiques » en continu, en plus des freebets. <strong>C'est moi qui vous fournis la sélection dans le canal privé</strong> — vous n'avez rien à trier vous-même.</li>
+              <li>Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour bénéficier des bonus en freebet. <strong>6 mois d'accès offerts à mon canal privé en s'inscrivant via notre lien CelsiusCasino.com</strong> (cumulable avec l'inscription BigClash1.com).</li>
+              <li>CelsiusCasino.com propose aussi des cotes boostées « classiques » en continu, en plus des freebets. <strong>C'est moi qui vous fournis la sélection dans le canal privé</strong> — vous n'avez rien à trier vous-même.</li>
               <li>Déposez entre 20€ (minimum) et 400€ (maximum), puis sélectionnez l'option <strong>« Bonus sport »</strong> : vous recevez 50% de votre dépôt en freebet, jusqu'à 200€ de freebet pour un dépôt de 400€.</li>
               <li>Misez le <strong>dépôt</strong> en une seule fois sur une cote ≥ 1,4 : c'est la condition pour pouvoir le retirer.</li>
               <li>Misez le <strong>freebet</strong> en une seule fois sur une cote &lt; 2, dans un délai de 2 à 3 jours (conditions actuelles).</li>
@@ -667,8 +440,8 @@
             <div class="offer-warning">
               <span class="offer-warning-label">⚠ À savoir</span>
               <ul>
-                <li>Celsius n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.</li>
-                <li>Ces conditions peuvent varier à chaque bonus : lisez toujours celles affichées par Celsius juste après votre dépôt.</li>
+                <li>CelsiusCasino.com n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.</li>
+                <li>Ces conditions peuvent varier à chaque bonus : lisez toujours celles affichées par CelsiusCasino.com juste après votre dépôt.</li>
                 <li>Vous devez avoir misé le dépôt avant de pouvoir retirer quoi que ce soit, y compris les gains du freebet.</li>
                 <li>Il arrive que la première demande de retrait soit refusée, le temps de valider votre compte auprès du service client — ou simplement à cause d'un bug. Dans les deux cas, contactez le chat pour régler la situation.</li>
                 <li>Support client par chat disponible 24/7 et efficace, même s'il faut parfois ouvrir plusieurs tickets pour résoudre un problème.</li>
@@ -678,12 +451,12 @@
             </div>
           </div>
 
-          <a class="btn-primary" href="https://celsius.games/pEuLPHXXjO" target="_blank" rel="noopener">S'inscrire sur Celsius</a>
+          <a class="btn-primary" href="https://celsius.games/pEuLPHXXjO" target="_blank" rel="noopener">S'inscrire sur CelsiusCasino.com</a>
         </div>
         <div class="offer-card reveal" style="--accent:var(--bigclash);">
           <svg class="sport-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M7 12c0-2.5 2-4.5 4.5-4.5H14a3 3 0 0 1 3 3v1.5"/><path d="M6 13v3a3 3 0 0 0 3 3h2"/><rect x="3.5" y="10" width="5" height="6" rx="2"/><path d="M17 12.5v3a3 3 0 0 1-3 3h-1"/></svg>
           <span class="perk">● Accès sélection premium</span>
-          <div class="bmk disp">BigClash</div>
+          <div class="bmk disp">BigClash1.com</div>
           <div class="cond">Ce que vous débloquez</div>
           <div class="bonus" style="font-size:19px;">Cotes boostées + cadeaux</div>
           <div class="cond">En vous inscrivant avec mon lien et un dépôt de 22€ minimum, vous accédez aux offres ponctuelles de la plateforme (freebets, offres casino selon période). <strong>L'accès à notre service de cotes boostées (14,99€/mois) vous est également offert.</strong></div>
@@ -691,7 +464,7 @@
           <div class="offer-steps">
             <p class="offer-steps-label">À lire avant de vous inscrire</p>
             <ol>
-              <li>Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour débloquer l'offre. <strong>1 an d'accès offert à mon canal privé en s'inscrivant via notre lien Big Clash</strong> (cumulable avec l'inscription Celsius).</li>
+              <li>Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour débloquer l'offre. <strong>1 an d'accès offert à mon canal privé en s'inscrivant via notre lien BigClash1.com</strong> (cumulable avec l'inscription CelsiusCasino.com).</li>
               <li>Déposez un minimum de 22€ pour débloquer les cotes ultra boostées.</li>
               <li>Ces cotes ultra boostées restent disponibles environ 3 à 4 jours après le déblocage.</li>
               <li>Passé ce délai, il reste des cotes boostées « classiques » sur la plateforme. <strong>C'est moi qui vous fournis la sélection dans le canal privé</strong> — vous n'avez rien à trier vous-même.</li>
@@ -699,7 +472,7 @@
             <div class="offer-warning">
               <span class="offer-warning-label">⚠ À savoir</span>
               <ul>
-                <li>BigClash n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.</li>
+                <li>BigClash1.com n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.</li>
                 <li>Premier retrait : généralement sous 7 à 10 jours ouvrés.</li>
                 <li>Retraits suivants : 1 à 2 jours ouvrés.</li>
                 <li>Support client par chat sur le site, réactif.</li>
@@ -709,7 +482,7 @@
             </div>
           </div>
 
-          <a class="btn-primary" href="https://mma.lynmonkel.com/?mid=372858_2180222" target="_blank" rel="noopener">S'inscrire sur BigClash</a>
+          <a class="btn-primary" href="https://mma.lynmonkel.com/?mid=372858_2180222" target="_blank" rel="noopener">S'inscrire sur BigClash1.com</a>
         </div>
       </div>
 
@@ -762,7 +535,7 @@
           <li><span class="yes">✓</span> Explications value & EV</li>
           <li><span class="yes">✓</span> Bilans publiés chaque semaine</li>
           <li><span class="yes">✓</span> Multiples concours et cadeaux</li>
-          <li class="no-item"><span class="no">✗</span> Cotes boostées BigClash & Celsius</li>
+          <li class="no-item"><span class="no">✗</span> Cotes boostées BigClash1.com & CelsiusCasino.com</li>
           <li class="no-item"><span class="no">✗</span> Notification à chaque cote sélectionnée</li>
           <li class="no-item"><span class="no">✗</span> Aide à la gestion de bankroll</li>
           <li class="no-item"><span class="no">✗</span> Aide pour utiliser les bonus (miser le dépôt, le freebet)</li>
@@ -776,10 +549,10 @@
         <div class="price"><span class="amount">14,99€</span> / mois</div>
         <p class="price-annual">À partir de <strong>10,75€/mois</strong> avec l'abonnement annuel</p>
         <div class="promo-code"></div>
-        <div class="premium-perk">🎁 1 an d'accès offert en s'inscrivant via notre lien chez Big Clash, 6 mois en s'inscrivant via notre lien Celsius — cumulable</div>
+        <div class="premium-perk">🎁 1 an d'accès offert en s'inscrivant via notre lien chez BigClash1.com, 6 mois en s'inscrivant via notre lien CelsiusCasino.com — cumulable</div>
         <p class="premium-stat">Déjà +1 951,80€ de bénéfice cumulé pour un ROI de 10,95% sur la sélection premium.</p>
         <ul>
-          <li>Toutes les cotes boostées sur Betclic, Unibet, Winamax, Celsius et BigClash, 5-6/jour et parfois bien plus, dès leur sortie</li>
+          <li>Toutes les cotes boostées sur Betclic, Unibet, Winamax, CelsiusCasino.com et BigClash1.com, 5-6/jour et parfois bien plus, dès leur sortie</li>
           <li>Aide à la gestion de bankroll</li>
           <li>Aide pour utiliser les bonus (comment miser le dépôt, le freebet)</li>
           <li>Suivi de bankroll détaillé, comme le bilan ci-dessus</li>
@@ -787,7 +560,7 @@
           <li>Aide personnalisée en cas de besoin</li>
         </ul>
         <a class="btn-primary" style="width:100%;justify-content:center;" href="https://t.me/cbbooste" target="_blank" rel="noopener">Voir l'abonnement</a>
-        <p class="microcopy" style="text-align:center;margin:10px 0 0;">Si vous vous abonnez au canal privé <strong>sans passer par un lien d'affiliation</strong> (BigClash ou Celsius), l'inscription se fait via le lien épinglé dans le canal public. Un souci ? Écrivez-moi en message privé sur Telegram.</p>
+        <p class="microcopy" style="text-align:center;margin:10px 0 0;">Si vous vous abonnez au canal privé <strong>sans passer par un lien d'affiliation</strong> (BigClash1.com ou CelsiusCasino.com), l'inscription se fait via le lien épinglé dans le canal public. Un souci ? Écrivez-moi en message privé sur Telegram.</p>
       </div>
     </div>
   </div>
@@ -822,14 +595,11 @@
 <script>
 const SHEET_ID = '13Qp5IiWt_YreXhXoY-_PEgtiys0d-MtCU5L1IUraWsQ';
 
-const demoBoosts = [
-  {bk:'Unibet', sport:'⚽', flags:'🇦🇷 🇨🇭', comp:'Football · Coupe du Monde 2026', match:'Argentine — Suisse', bet:'Messi décisif en 1ère mi-temps', old:'2,25', new:'2,55', expire:'Sur 90 minutes'},
-];
-
-// Preview stack (profondeur 3D, navigable) — alimenté uniquement par les vraies données live.
-// Toutes les cotes de "boosts" sont publiques : aucune n'est verrouillée, la pile permet
-// juste de les parcourir sans toutes les afficher à plat en même temps.
+// Preview stack (profondeur 3D, navigable) — les cotes publiques viennent des vraies
+// données live (Telegram), le nombre de cotes privées vient du Google Sheet (onglet
+// "stats") et n'affiche que des cartes floutées sans aucune vraie donnée.
 let boosts = [];
+let privateCount = 0;
 let stackOffset = 0;
 const track = document.getElementById('preview-track');
 const stackWrap = document.getElementById('previewStackWrap');
@@ -852,14 +622,17 @@ function slotFor(rel){
   const extra = rel - STACK_SLOTS.length + 1;
   return {tf:`translate(-50%,-50%) translateZ(${-150 - extra*45}px) translateX(${72 + extra*14}px) translateY(${48 + extra*10}px) rotate(${9 + extra*2}deg)`, cls:'depth-3'};
 }
+function totalCount(){ return boosts.length + privateCount; }
 function computeSlot(i){
-  const rel = (i - stackOffset + boosts.length) % boosts.length;
+  const total = totalCount();
+  const rel = (i - stackOffset + total) % total;
   const slot = slotFor(rel);
   const visible = rel < VISIBLE_LAYERS;
   return {tf: slot.tf, cls: visible ? slot.cls : 'depth-3', opacity: visible ? 1 : 0, interactive: visible && rel > 0};
 }
 function applySlot(card, s){
-  card.className = 'p-card ' + s.cls;
+  const locked = card.classList.contains('blurred');
+  card.className = 'p-card ' + s.cls + (locked ? ' blurred' : '');
   card.style.setProperty('--tf', s.tf);
   card.style.opacity = String(s.opacity);
   card.style.pointerEvents = s.interactive ? 'auto' : 'none';
@@ -875,6 +648,22 @@ function pCardHTML(b, i){
   </div>`;
 }
 
+// Carte "réservée au canal privé" : uniquement du contenu abstrait/flouté,
+// jamais de vraie donnée — le sheet ne donne qu'un nombre, pas le détail.
+function pCardBlurredHTML(i){
+  return `<div class="p-card blurred" data-boost-index="${i}">
+    <div class="p-blur-overlay">🔒<span>Réservée au canal privé</span></div>
+    <div class="p-top"><span class="p-sport">⚽</span><span class="p-comp">•••••••••••••</span><span class="p-flags">••</span></div>
+    <div class="p-match">•••••• — ••••••</div>
+    <div class="p-bet">••••••••••••••••••••••••••</div>
+    <div class="p-odds-row"><span class="p-bk">•••••</span><span class="p-old">•,••</span><span class="p-arrow">→</span><span class="p-new">•,••</span></div>
+  </div>`;
+}
+
+function cardHTMLForIndex(i){
+  return i < boosts.length ? pCardHTML(boosts[i], i) : pCardBlurredHTML(i);
+}
+
 function centeredMessageHTML(text){
   return `<div class="p-card locked centered">${text}</div>`;
 }
@@ -884,34 +673,35 @@ let firstStackRender = true;
 function accord(n, singular, plural){ return n === 1 ? singular : plural; }
 
 function renderPreviewTrack(){
-  if(!boosts.length){
+  const total = totalCount();
+  if(!total){
     track.classList.remove('navigable');
     track.style.display = 'flex'; track.style.alignItems = 'center'; track.style.justifyContent = 'center';
-    track.innerHTML = centeredMessageHTML('⏳<br>Aucune cote publique pour le moment<br><span style="opacity:.7;">rejoignez le groupe privé pour tout voir en direct</span>');
+    track.innerHTML = centeredMessageHTML('⏳<br>Aucune cote pour le moment<br><span style="opacity:.7;">rejoignez le groupe privé pour tout voir en direct</span>');
     previewCaption.textContent = '';
     previewNav.style.display = 'none';
     return;
   }
   track.style.display = ''; track.style.alignItems = ''; track.style.justifyContent = '';
-  stackOffset = stackOffset % boosts.length;
+  stackOffset = stackOffset % total;
 
-  previewCaption.textContent = `${boosts.length} cote${accord(boosts.length,'','s')} publique${accord(boosts.length,'','s')} disponible${accord(boosts.length,'','s')} aujourd'hui`;
+  previewCaption.textContent = `${boosts.length} cote${accord(boosts.length,'','s')} publique${accord(boosts.length,'','s')} dévoilée${accord(boosts.length,'','s')} · ${privateCount} réservée${accord(privateCount,'','s')} au canal privé aujourd'hui`;
 
-  if(boosts.length > 1){
+  if(total > 1){
     previewNav.style.display = 'flex';
-    previewDots.innerHTML = boosts.map((_, i) =>
-      `<button class="preview-dot${i===stackOffset?' active':''}" data-goto="${i}" aria-label="Cote ${i+1}"></button>`
+    previewDots.innerHTML = Array.from({length: total}, (_, i) =>
+      `<button class="preview-dot${i===stackOffset?' active':''}${i>=boosts.length?' locked':''}" data-goto="${i}" aria-label="${i<boosts.length ? 'Cote publique '+(i+1) : 'Cote réservée au canal privé'}"></button>`
     ).join('');
   } else {
     previewNav.style.display = 'none';
   }
 
-  track.classList.toggle('navigable', boosts.length > 1);
-  track.innerHTML = boosts.map((b, i) => pCardHTML(b, i)).join('');
+  track.classList.toggle('navigable', total > 1);
+  track.innerHTML = Array.from({length: total}, (_, i) => cardHTMLForIndex(i)).join('');
   track.querySelectorAll('.p-card[data-boost-index]').forEach(card => {
     card.addEventListener('click', () => {
       const i = parseInt(card.dataset.boostIndex, 10);
-      const rel = (i - stackOffset + boosts.length) % boosts.length;
+      const rel = (i - stackOffset + total) % total;
       if(rel === 0 || rel >= VISIBLE_LAYERS) return;
       rotateStack(rel);
     });
@@ -921,12 +711,13 @@ function renderPreviewTrack(){
 }
 
 function rotateStack(steps){
-  stackOffset = (stackOffset + steps + boosts.length) % boosts.length;
+  const total = totalCount();
+  stackOffset = (stackOffset + steps + total) % total;
   previewDots.querySelectorAll('.preview-dot').forEach((dot, i) => dot.classList.toggle('active', i === stackOffset));
   updateStackPositions('rotate');
 }
 
-document.getElementById('previewPrev').addEventListener('click', () => rotateStack(boosts.length - 1));
+document.getElementById('previewPrev').addEventListener('click', () => rotateStack(totalCount() - 1));
 document.getElementById('previewNext').addEventListener('click', () => rotateStack(1));
 previewDots.addEventListener('click', (e) => {
   const dot = e.target.closest('[data-goto]');
@@ -1039,35 +830,6 @@ async function loadPublicBoosts(){
 loadPublicBoosts();
 setInterval(loadPublicBoosts, 5 * 60 * 1000); // rafraîchit toutes les 5 minutes sans recharger la page
 
-// Mockup téléphone hero — PlikPok -> notif Tvgram -> message -> Uniclic -> pari -> confirmation -> outro
-const phScenes = ['ph-lock','ph-tvgram','ph-opening-uniclic','ph-uniclic','ph-slip','ph-confirm','ph-outro'];
-
-function showPhScene(name){
-  phScenes.forEach(s => document.getElementById(s).classList.toggle('active', s === name));
-  document.getElementById('ph-statusbar-persistent').style.opacity = name === 'ph-lock' ? '0' : '1';
-}
-
-const phSteps = [
-  { scene:'ph-lock', duration:2600 },
-  { scene:'ph-tvgram', duration:3600 },
-  { scene:'ph-opening-uniclic', duration:1000 },
-  { scene:'ph-uniclic', duration:1800 },
-  { scene:'ph-slip', duration:2800 },
-  { scene:'ph-confirm', duration:1500 },
-  { scene:'ph-outro', duration:2600 },
-];
-
-let phStepIndex = 0;
-function phTick(){
-  const step = phSteps[phStepIndex];
-  showPhScene(step.scene);
-  setTimeout(()=>{
-    phStepIndex = (phStepIndex + 1) % phSteps.length;
-    phTick();
-  }, step.duration);
-}
-phTick();
-
 // Count-up stats
 function animateCount(el){
   const target = parseFloat(el.dataset.count);
@@ -1086,7 +848,8 @@ function animateCount(el){
   requestAnimationFrame(step);
 }
 // Bilan (stats du hero) — onglet "stats" du même Google Sheet
-// Une seule ligne de données, colonnes : benefice | roi | mise_moyenne | cote_moyenne
+// Une seule ligne de données, colonnes : benefice | roi | mise_moyenne | cote_moyenne | cotes_privees
+// "cotes_privees" = nombre de cotes envoyées ce jour-là dans le canal privé (varie chaque jour, saisi à la main).
 async function loadStats(){
   try{
     const res = await fetch(`https://opensheet.elk.sh/${SHEET_ID}/stats`);
@@ -1107,6 +870,12 @@ async function loadStats(){
       if(!isNaN(benefice) && !isNaN(roi)){
         const statText = `Déjà +${benefice.toFixed(2).replace('.', ',')}€ de bénéfice cumulé pour un ROI de ${roi.toFixed(2).replace('.', ',')}% sur la sélection premium.`;
         document.querySelectorAll('.premium-stat').forEach(el => { el.textContent = statText; });
+      }
+      const privateRaw = s['cotes_privees'] || s['cotes_prive'] || s['cotes_canal_prive'] || s['prive'];
+      const privateParsed = parseInt(String(privateRaw).replace(',', '.'), 10);
+      if(!isNaN(privateParsed)){
+        privateCount = Math.max(0, privateParsed);
+        renderPreviewTrack();
       }
     }
   }catch(e){
@@ -1221,16 +990,16 @@ const ICONS = {
 const OFFER_STEPS = {
   celsius: {
     steps: [
-      "Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour bénéficier des bonus en freebet. <strong>6 mois d'accès offerts à mon canal privé en s'inscrivant via notre lien Celsius</strong> (cumulable avec l'inscription Big Clash).",
-      "Celsius propose aussi des cotes boostées « classiques » en continu, en plus des freebets. <strong>C'est moi qui vous fournis la sélection dans le canal privé</strong> — vous n'avez rien à trier vous-même.",
+      "Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour bénéficier des bonus en freebet. <strong>6 mois d'accès offerts à mon canal privé en s'inscrivant via notre lien CelsiusCasino.com</strong> (cumulable avec l'inscription BigClash1.com).",
+      "CelsiusCasino.com propose aussi des cotes boostées « classiques » en continu, en plus des freebets. <strong>C'est moi qui vous fournis la sélection dans le canal privé</strong> — vous n'avez rien à trier vous-même.",
       "Déposez entre 20€ (minimum) et 400€ (maximum), puis sélectionnez l'option <strong>« Bonus sport »</strong> : vous recevez 50% de votre dépôt en freebet, jusqu'à 200€ de freebet pour un dépôt de 400€.",
       "Misez le <strong>dépôt</strong> en une seule fois sur une cote ≥ 1,4 : c'est la condition pour pouvoir le retirer.",
       "Misez le <strong>freebet</strong> en une seule fois sur une cote &lt; 2, dans un délai de 2 à 3 jours (conditions actuelles).",
       "Pour les bonus suivants (hors bienvenue), la cote maximale autorisée passe à 7 et vous avez 6 à 7 jours pour miser le freebet — je vous communique directement les codes pour en profiter.",
     ],
     warnings: [
-      "Celsius n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.",
-      "Ces conditions peuvent varier à chaque bonus : lisez toujours celles affichées par Celsius juste après votre dépôt.",
+      "CelsiusCasino.com n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.",
+      "Ces conditions peuvent varier à chaque bonus : lisez toujours celles affichées par CelsiusCasino.com juste après votre dépôt.",
       "Vous devez avoir misé le dépôt avant de pouvoir retirer quoi que ce soit, y compris les gains du freebet.",
       "Il arrive que la première demande de retrait soit refusée, le temps de valider votre compte auprès du service client — ou simplement à cause d'un bug. Dans les deux cas, contactez le chat pour régler la situation.",
       "Support client par chat disponible 24/7 et efficace, même s'il faut parfois ouvrir plusieurs tickets pour résoudre un problème.",
@@ -1240,13 +1009,13 @@ const OFFER_STEPS = {
   },
   bigclash: {
     steps: [
-      "Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour débloquer l'offre. <strong>1 an d'accès offert à mon canal privé en s'inscrivant via notre lien Big Clash</strong> (cumulable avec l'inscription Celsius).",
+      "Inscrivez-vous <strong>impérativement via ce lien</strong> : c'est la condition pour débloquer l'offre. <strong>1 an d'accès offert à mon canal privé en s'inscrivant via notre lien BigClash1.com</strong> (cumulable avec l'inscription CelsiusCasino.com).",
       "Déposez un minimum de 22€ pour débloquer les cotes ultra boostées.",
       "Ces cotes ultra boostées restent disponibles environ 3 à 4 jours après le déblocage.",
       "Passé ce délai, il reste des cotes boostées « classiques » sur la plateforme. <strong>C'est moi qui vous fournis la sélection dans le canal privé</strong> — vous n'avez rien à trier vous-même.",
     ],
     warnings: [
-      "BigClash n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.",
+      "BigClash1.com n'est pas régulé par l'ANJ (Autorité Nationale des Jeux) en France.",
       "Premier retrait : généralement sous 7 à 10 jours ouvrés.",
       "Retraits suivants : 1 à 2 jours ouvrés.",
       "Support client par chat sur le site, réactif.",
@@ -1255,6 +1024,14 @@ const OFFER_STEPS = {
     ],
   },
 };
+// Normalise le nom du bookmaker tel que tapé dans le sheet ("Celsius", "CelsiusCasino.com",
+// "Big clash", "BigClash1.com"...) vers la clé interne stable utilisée par ICONS/OFFER_STEPS/--accent.
+function resolveOfferKey(raw){
+  const k = (raw || '').toLowerCase().replace(/\s+/g,'');
+  if(k.includes('celsius')) return 'celsius';
+  if(k.includes('bigclash')) return 'bigclash';
+  return k;
+}
 function offerStepsHTML(key){
   const data = OFFER_STEPS[key];
   if(!data) return '';
@@ -1279,7 +1056,7 @@ async function loadOffers(){
     if(offres.length){
       const cardsEl = document.getElementById('offers-cards');
       cardsEl.innerHTML = offres.map(o => {
-        const key = (o['Bookmaker']||'').toLowerCase().replace(/\s+/g,'');
+        const key = resolveOfferKey(o['Bookmaker']);
         const icon = ICONS[key] || ICONS.default;
         return `<div class="offer-card reveal" style="--accent:var(--${key}, var(--gold));">
           <span class="sport-icon">${icon}</span>
@@ -1297,7 +1074,7 @@ async function loadOffers(){
     }
     if(codes.length){
       document.getElementById('offers-codes').innerHTML = codes.map(c => {
-        const key = (c['Bookmaker']||'').toLowerCase().replace(/\s+/g,'');
+        const key = resolveOfferKey(c['Bookmaker']);
         const darkClass = key === 'winamax' ? ' dark-card' : '';
         return `<a class="code-card reveal${darkClass}" style="--accent:var(--${key}, var(--gold));" href="${c['lien'] || '#'}" target="_blank" rel="noopener">
           <div class="name">${c['Bookmaker']} · code parrain</div>
