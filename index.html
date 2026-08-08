@@ -94,20 +94,21 @@
   .btn-nav{background:var(--gold);color:var(--ink);font-weight:600;font-size:14px;padding:9px 18px;border-radius:8px;text-decoration:none;transition:transform .15s;}
   .btn-nav:hover{transform:translateY(-1px);}
 
-  header.hero{padding:60px 0 0;position:relative;z-index:1;overflow:hidden;}
-  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);margin:0 0 18px;display:flex;align-items:center;gap:8px;}
+  header.hero{padding:34px 0 0;position:relative;z-index:1;overflow:hidden;}
+  .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);margin:0 0 14px;display:flex;align-items:center;gap:8px;}
   .eyebrow .pulse{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite;}
-  h1{font-size:clamp(32px,5.2vw,52px);margin:0 0 20px;letter-spacing:-0.02em;font-weight:700;max-width:16ch;}
+  h1{font-size:clamp(26px,3.6vw,38px);margin:0 0 14px;letter-spacing:-0.02em;font-weight:700;max-width:21ch;}
   h1 .accent{color:var(--gold);}
-  .hero-sub{color:var(--paper-dim);font-size:16.5px;max-width:52ch;margin:0 0 30px;}
-  .cta-row{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:16px;}
+  .hero-sub{color:var(--paper-dim);font-size:14px;line-height:1.5;max-width:54ch;margin:0 0 10px;}
+  .hero-sub-secondary{color:var(--paper-dim);opacity:.82;font-size:12.5px;line-height:1.5;max-width:54ch;margin:0 0 20px;}
+  .cta-row{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:14px;}
   .btn-primary{background:var(--gold);color:var(--ink);font-weight:600;font-size:15.5px;padding:15px 26px;border-radius:9px;text-decoration:none;display:inline-flex;align-items:center;gap:8px;transition:transform .15s,box-shadow .15s;}
   .btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(217,164,65,0.25);}
   .btn-secondary{background:transparent;color:var(--paper);font-weight:600;font-size:15.5px;padding:14px 24px;border-radius:9px;text-decoration:none;border:1px solid var(--line);display:inline-flex;align-items:center;gap:8px;transition:border-color .15s;}
   .btn-secondary:hover{border-color:var(--blue);}
   .microcopy{font-size:12.5px;color:var(--paper-dim);margin:0 0 20px;}
 
-  .hero-grid{display:grid;grid-template-columns:1.15fr 0.85fr;gap:40px;align-items:center;padding-bottom:50px;position:relative;z-index:1;}
+  .hero-grid{display:grid;grid-template-columns:1.15fr 0.85fr;gap:40px;align-items:center;padding-bottom:30px;position:relative;z-index:1;}
   @media (max-width:850px){.hero-grid{grid-template-columns:1fr;}}
 
   /* PREVIEW STRIP */
@@ -334,9 +335,10 @@
     <div>
       <p class="eyebrow"><span class="pulse"></span>~50 cotes boostées analysées / semaine</p>
       <h1 class="disp">On ne parie pas plus souvent.<br>On parie quand <span class="accent shimmer-text">le bookmaker</span> se trompe.</h1>
-      <p class="hero-sub">Je suis un parieur largement rentable depuis 8 ans grâce aux cotes boostées et à l'exploitation des bonus en freebet. Je vous partage simplement ma sélection de cotes boostées chaque jour dans le canal Telegram privé. L'exploitation de ces cotes m'a permis de générer parfois plusieurs centaines d'euros par mois avec une mise moyenne de 12€. Dans le canal, je vous accompagne aussi pour obtenir le plus de freebets possible via les promotions/bonus. Je vous aide à gérer votre bankroll et convertir vos freebets, et encore beaucoup de nouvelles choses à venir 🎁</p>
+      <p class="hero-sub">Je suis un parieur rentable depuis 2016/2017 grâce aux cotes boostées et à l'exploitation des bonus en freebet. Je vous partage simplement ma sélection de cotes boostées chaque jour dans le canal Telegram privé. L'exploitation de ces cotes m'a permis de générer parfois plusieurs centaines d'euros par mois avec une mise moyenne de 12€.</p>
+      <p class="hero-sub-secondary">Dans le canal, je vous accompagne pour obtenir le plus de freebets possible via les promotions/bonus. Je vous aide également à gérer votre bankroll, à convertir vos freebets, et encore beaucoup de nouvelles choses à venir 🎁</p>
       <div class="cta-row">
-        <a class="btn-primary magnetic" href="https://celsius.games/pEuLPHXXjO" target="_blank" rel="noopener">Inscris-toi dès maintenant via ce lien pour obtenir jusqu'à 200€ de freebet avec ton premier dépôt. Voir conditions ci-dessous.</a>
+        <a class="btn-primary magnetic" href="https://celsius.games/pEuLPHXXjO" target="_blank" rel="noopener">Obtiens jusqu'à 200€ de freebet en bonus de bienvenue chez notre partenaire CelsiusCasino.com</a>
         <a class="btn-secondary magnetic" href="https://t.me/cbbooste" target="_blank" rel="noopener">Rejoindre le canal Telegram public gratuit pour avoir un aperçu</a>
       </div>
       <p class="microcopy">18+ · Jeu responsable · Aucune garantie de gain</p>
@@ -848,8 +850,8 @@ function animateCount(el){
   requestAnimationFrame(step);
 }
 // Bilan (stats du hero) — onglet "stats" du même Google Sheet
-// Une seule ligne de données, colonnes : benefice | roi | mise_moyenne | cote_moyenne | cotes_privees
-// "cotes_privees" = nombre de cotes envoyées ce jour-là dans le canal privé (varie chaque jour, saisi à la main).
+// Une seule ligne de données, colonnes : benefice | roi | mise_moyenne | cote_moyenne | cote_privées
+// "cote_privées" = nombre de cotes envoyées ce jour-là dans le canal privé (varie chaque jour, saisi à la main).
 async function loadStats(){
   try{
     const res = await fetch(`https://opensheet.elk.sh/${SHEET_ID}/stats`);
@@ -871,7 +873,7 @@ async function loadStats(){
         const statText = `Déjà +${benefice.toFixed(2).replace('.', ',')}€ de bénéfice cumulé pour un ROI de ${roi.toFixed(2).replace('.', ',')}% sur la sélection premium.`;
         document.querySelectorAll('.premium-stat').forEach(el => { el.textContent = statText; });
       }
-      const privateRaw = s['cotes_privees'] || s['cotes_prive'] || s['cotes_canal_prive'] || s['prive'];
+      const privateRaw = s['cote_privees'] || s['cotes_privees'] || s['cote_prive'] || s['cotes_prive'] || s['cotes_canal_prive'] || s['prive'];
       const privateParsed = parseInt(String(privateRaw).replace(',', '.'), 10);
       if(!isNaN(privateParsed)){
         privateCount = Math.max(0, privateParsed);
