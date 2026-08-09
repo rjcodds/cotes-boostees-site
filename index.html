@@ -46,6 +46,70 @@
   ]
 }
 </script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Qu'est-ce que le value betting ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Parier non pas sur le résultat que vous pensez probable, mais sur les cotes où le bookmaker s'est trompé dans son évaluation de la probabilité réelle. Exemple simple : sur un pile ou face, la probabilité réelle est de 50/50. Si un bookmaker propose une cote de 2,10 sur « pile » (ce qui n'implique que 47,6 % de chances), il y a de la valeur — sur le long terme, parier dessus systématiquement est profitable, même si chaque tirage reste imprévisible. C'est cet écart entre probabilité réelle et cote proposée qui génère le profit, pas la chance sur un seul pari."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Faut-il gagner la majorité de ses paris pour être rentable ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Non, et c'est tout l'intérêt du value betting. Depuis décembre 2025 nous n'avons remporté que 46,52 % de nos paris — moins d'un sur deux — mais le bilan progresse malgré tout de +650 % grâce à une cote moyenne de 2,70. Un pari gagnant ou perdant, pris isolément, ne dit rien sur la rentabilité de l'approche : c'est la moyenne sur un grand nombre de paris qui compte, pas chaque résultat individuel."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Peut-il y avoir des mois négatifs ou des séries de paris perdus ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Oui. Le value betting reste basé sur la probabilité, pas la certitude : il est tout à fait possible d'enchaîner jusqu'à 8 paris perdus d'affilée, ou de terminer un mois entier dans le négatif, même en suivant des cotes à réelle valeur mathématique. C'est la régularité sur le long terme qui rend l'approche profitable, pas chaque pari pris individuellement. Nous publions aussi bien les mois positifs que négatifs dans notre bilan public."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Combien puis-je gagner ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Ça dépend de votre bankroll et de votre régularité. Le suivi public montre +1 951,80€ cumulés pour un ROI de 10,95%, mise moyenne 12€. Aucune garantie de gain — voir le bilan complet plus haut sur cette page."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Comment fonctionne le canal Telegram privé ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Chaque cote boostée sélectionnée est envoyée avec le montant à miser selon votre bankroll. Vous recevez aussi de l'aide pour les bonus/freebets et la gestion de bankroll."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Toutes les cotes boostées sont-elles fiables ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Non — beaucoup ne sont que du marketing de la part des bookmakers. Mon équipe et moi analysons chaque cote avant de la partager pour ne garder que celles à réelle valeur."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Quels bookmakers utilisez-vous ?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Betclic, Unibet, Winamax, CelsiusCasino.com et BigClash1.com."
+      }
+    }
+  ]
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
@@ -398,6 +462,15 @@
   .transparency strong{color:var(--paper);}
   .transparency .highlight{display:inline-block;background:var(--panel-2);border:1px solid var(--line);padding:2px 8px;border-radius:6px;color:var(--gold);font-family:"IBM Plex Mono",monospace;font-size:13.5px;}
 
+  .faq-list{max-width:74ch;display:flex;flex-direction:column;gap:10px;}
+  .faq-item{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;}
+  .faq-item summary{list-style:none;cursor:pointer;padding:18px 22px;font-weight:600;font-size:15px;color:var(--paper);display:flex;align-items:center;justify-content:space-between;gap:16px;}
+  .faq-item summary::-webkit-details-marker{display:none;}
+  .faq-item summary::after{content:'+';font-size:20px;color:var(--gold);flex-shrink:0;transition:transform .2s ease;}
+  .faq-item[open] summary::after{transform:rotate(45deg);}
+  .faq-item summary:hover{color:var(--gold);}
+  .faq-item p{margin:0;padding:0 22px 20px;font-size:14px;line-height:1.6;color:var(--paper-dim);}
+
   footer{border-top:1px solid var(--line);padding:36px 0 44px;position:relative;z-index:1;}
   .legal{font-size:12px;color:var(--paper-dim);line-height:1.7;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:20px;}
   .legal strong{color:var(--paper);}
@@ -448,6 +521,7 @@
       <a href="#outil">Calculateur</a>
       <a href="#communaute">Communauté</a>
       <a href="#transparence">Bilan</a>
+      <a href="#faq">FAQ</a>
     </div>
     <a class="btn-nav" href="#offres">Voir les bonus</a>
   </div>
@@ -823,6 +897,45 @@
       <div style="margin-top:18px;">
         <a class="btn-secondary" href="https://app.bet-analytix.com/bankroll/1712234" target="_blank" rel="noopener">Voir le bilan complet en direct →</a>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <div class="section-head">
+      <p class="section-eyebrow">Questions fréquentes</p>
+      <h2 class="disp">Avant de vous lancer</h2>
+    </div>
+    <div class="faq-list">
+      <details class="faq-item">
+        <summary>Qu'est-ce que le value betting ?</summary>
+        <p>Parier non pas sur le résultat que vous pensez probable, mais sur les cotes où le bookmaker s'est trompé dans son évaluation de la probabilité réelle. Exemple simple : sur un pile ou face, la probabilité réelle est de 50/50. Si un bookmaker propose une cote de 2,10 sur « pile » (ce qui n'implique que 47,6 % de chances), il y a de la valeur — sur le long terme, parier dessus systématiquement est profitable, même si chaque tirage reste imprévisible. C'est cet écart entre probabilité réelle et cote proposée qui génère le profit, pas la chance sur un seul pari.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Faut-il gagner la majorité de ses paris pour être rentable ?</summary>
+        <p>Non, et c'est tout l'intérêt du value betting. Depuis décembre 2025 nous n'avons remporté que 46,52 % de nos paris — moins d'un sur deux — mais le bilan progresse malgré tout de +650 % grâce à une cote moyenne de 2,70. Un pari gagnant ou perdant, pris isolément, ne dit rien sur la rentabilité de l'approche : c'est la moyenne sur un grand nombre de paris qui compte, pas chaque résultat individuel.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Peut-il y avoir des mois négatifs ou des séries de paris perdus ?</summary>
+        <p>Oui. Le value betting reste basé sur la probabilité, pas la certitude : il est tout à fait possible d'enchaîner jusqu'à 8 paris perdus d'affilée, ou de terminer un mois entier dans le négatif, même en suivant des cotes à réelle valeur mathématique. C'est la régularité sur le long terme qui rend l'approche profitable, pas chaque pari pris individuellement. Nous publions aussi bien les mois positifs que négatifs dans notre bilan public.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Combien puis-je gagner ?</summary>
+        <p>Ça dépend de votre bankroll et de votre régularité. Le suivi public montre +1 951,80€ cumulés pour un ROI de 10,95%, mise moyenne 12€. Aucune garantie de gain — voir le bilan complet plus haut sur cette page.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Comment fonctionne le canal Telegram privé ?</summary>
+        <p>Chaque cote boostée sélectionnée est envoyée avec le montant à miser selon votre bankroll. Vous recevez aussi de l'aide pour les bonus/freebets et la gestion de bankroll.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Toutes les cotes boostées sont-elles fiables ?</summary>
+        <p>Non — beaucoup ne sont que du marketing de la part des bookmakers. Mon équipe et moi analysons chaque cote avant de la partager pour ne garder que celles à réelle valeur.</p>
+      </details>
+      <details class="faq-item">
+        <summary>Quels bookmakers utilisez-vous ?</summary>
+        <p>Betclic, Unibet, Winamax, CelsiusCasino.com et BigClash1.com.</p>
+      </details>
     </div>
   </div>
 </section>
