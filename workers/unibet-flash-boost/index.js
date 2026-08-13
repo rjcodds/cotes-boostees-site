@@ -2,56 +2,205 @@
 // canal Telegram privé toute cote boostée dont la mise max est <= MAX_STAKE_EUR.
 //
 // Tourne sur un Cron Trigger Cloudflare (voir wrangler.toml). Les données sont
-// extraites du JSON embarqué dans le HTML de la page (rendu côté serveur par
-// Unibet), pas d'un navigateur headless -- la page est directement exploitable
-// via une simple requête HTTP.
+// lues depuis le JSON "BoostedBets" embarqué dans le HTML de la page (rendu
+// côté serveur par Unibet) -- pas d'un navigateur headless, la page est
+// directement exploitable via une simple requête HTTP.
 
 const UNIBET_URL = 'https://www.unibet.fr/cotes-boostees';
 const MAX_STAKE_EUR = 10;
 const SEEN_TTL_SECONDS = 6 * 60 * 60; // 6h : évite de reposter la même cote à chaque poll
-
-// Repère chaque paire eventDesc/marketDesc telle qu'elle apparaît dans le JSON
-// embarqué (voir sample capturé sur la page réelle) :
-//   "eventDesc":"N.Osaka vs E.Rybakina","groupId":190560683,"marketDesc":"CB - ... (2,20 -> 2,50 / Mise max 50€) - Match"
-// Les cotes "CB FLASH" utilisent parfois une flèche unicode (→) au lieu de "->",
-// et peuvent avoir une clause en plus entre l'encadré cote/mise et la période
-// (ex: "(Remboursé si non titulaire) - 90 Mins") -- le regex gère les deux cas.
-const ENTRY_RE = /"eventDesc":"([^"]+)","groupId":(\d+),"marketDesc":"([^"]+)"/g;
+const STATE_SCRIPT_RE = /<script id="serverApp-state" type="application\/json">(.*?)<\/script>/s;
 const ODDS_RE = /\(([\d,]+)\s*(?:->|→)\s*([\d,]+)\s*\/\s*Mise max\s*(\d+)\s*€\)/;
 
+const SPORT_EMOJI = {
+	Football: '⚽',
+	Tennis: '🎾',
+	Basketball: '🏀',
+	Rugby: '🏉',
+	'Hockey sur glace': '🏒',
+	Handball: '🤾',
+	Volleyball: '🏐',
+	Baseball: '⚾',
+	MMA: '🥊',
+	Boxe: '🥊',
+	Cyclisme: '🚴',
+	Golf: '⛳',
+	Snooker: '🎱',
+	Fléchettes: '🎯',
+};
+
+// Compétitions continentales -> drapeau européen. Championnats nationaux ->
+// drapeau du pays. Heuristique sur le nom de ligue, forcément imparfaite --
+// à enrichir au fil des cas réels rencontrés.
+const EUROPEAN_COMPETITION_KEYWORDS = [
+	'champions league',
+	'ligue des champions',
+	'europa league',
+	'ligue europa',
+	'conference league',
+	"supercoupe d'europe",
+	'supercoupe europe',
+	'euroligue',
+];
+const DOMESTIC_LEAGUE_FLAGS = [
+	[/ligue 1|ligue 2|coupe de france/i, '🇫🇷'],
+	[/premier league|fa cup|efl cup|championship anglais/i, '🏴'],
+	[/serie a|serie b|coppa italia/i, '🇮🇹'],
+	[/liga(?!ue)|copa del rey/i, '🇪🇸'],
+	[/bundesliga|dfb.?pokal/i, '🇩🇪'],
+	[/eredivisie/i, '🇳🇱'],
+	[/liga portugal|primeira liga/i, '🇵🇹'],
+	[/jupiler|pro league belge/i, '🇧🇪'],
+];
+
+// Matchs de sélections (amicaux, grands tournois) -> un drapeau par équipe
+// plutôt qu'un drapeau de compétition.
+const NATIONAL_TEAM_KEYWORDS = [
+	'coupe du monde',
+	/\bcdm\b/i,
+	/\beuro\b/i,
+	/\bcan\b/i,
+	"coupe d'afrique",
+	'amical',
+	'nations league',
+	'ligue des nations',
+	'mondial',
+	'qualif',
+];
+
+const COUNTRY_FLAGS = {
+	france: '🇫🇷', belgique: '🇧🇪', suisse: '🇨🇭', espagne: '🇪🇸', italie: '🇮🇹',
+	allemagne: '🇩🇪', angleterre: '🏴', portugal: '🇵🇹', 'pays-bas': '🇳🇱', hollande: '🇳🇱',
+	argentine: '🇦🇷', bresil: '🇧🇷', uruguay: '🇺🇾', chili: '🇨🇱', colombie: '🇨🇴',
+	maroc: '🇲🇦', senegal: '🇸🇳', algerie: '🇩🇿', tunisie: '🇹🇳', egypte: '🇪🇬',
+	nigeria: '🇳🇬', ghana: '🇬🇭', cameroun: '🇨🇲', "cote d'ivoire": '🇨🇮',
+	croatie: '🇭🇷', pologne: '🇵🇱', serbie: '🇷🇸', ukraine: '🇺🇦', turquie: '🇹🇷',
+	autriche: '🇦🇹', danemark: '🇩🇰', suede: '🇸🇪', norvege: '🇳🇴', ecosse: '🏴',
+	irlande: '🇮🇪', 'pays de galles': '🏴', usa: '🇺🇸', 'etats-unis': '🇺🇸', mexique: '🇲🇽',
+	japon: '🇯🇵', 'coree du sud': '🇰🇷', australie: '🇦🇺', canada: '🇨🇦',
+	qatar: '🇶🇦', 'arabie saoudite': '🇸🇦', iran: '🇮🇷',
+};
+
+function normalize(s) {
+	return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function countryFlag(name) {
+	return COUNTRY_FLAGS[normalize(name)] || null;
+}
+
+function competitionFlag(leagueLabel) {
+	if (!leagueLabel) return null;
+	const clean = leagueLabel.replace(/^Cotes Boost[ée]es\s*/i, '');
+	const lower = clean.toLowerCase();
+	if (EUROPEAN_COMPETITION_KEYWORDS.some((k) => lower.includes(k))) return '🇪🇺';
+	for (const [re, flag] of DOMESTIC_LEAGUE_FLAGS) {
+		if (re.test(clean)) return flag;
+	}
+	return null;
+}
+
+function isNationalTeamContext(leagueLabel) {
+	if (!leagueLabel) return false;
+	const clean = leagueLabel.replace(/^Cotes Boost[ée]es\s*/i, '');
+	return NATIONAL_TEAM_KEYWORDS.some((k) => (k instanceof RegExp ? k.test(clean) : clean.toLowerCase().includes(k)));
+}
+
+function formatEventName(opponentA, opponentB, leagueLabel, sportLabel) {
+	const emoji = SPORT_EMOJI[sportLabel] || '🏅';
+	if (isNationalTeamContext(leagueLabel)) {
+		const flagA = countryFlag(opponentA);
+		const flagB = countryFlag(opponentB);
+		if (flagA && flagB) {
+			return `${emoji} ${opponentA} ${flagA} - ${opponentB} ${flagB}`;
+		}
+	}
+	const compFlag = competitionFlag(leagueLabel);
+	if (compFlag) {
+		return `${emoji} ${opponentA} - ${opponentB} ${compFlag}`;
+	}
+	return `${emoji} ${opponentA} - ${opponentB}`;
+}
+
+function formatKickoffTime(parsedStart) {
+	if (!parsedStart) return null;
+	try {
+		const d = new Date(parsedStart);
+		const parts = new Intl.DateTimeFormat('fr-FR', {
+			timeZone: 'Europe/Paris',
+			hour: '2-digit',
+			minute: '2-digit',
+		}).formatToParts(d);
+		const h = parts.find((p) => p.type === 'hour').value;
+		const min = parts.find((p) => p.type === 'minute').value;
+		return `${h}h${min}`;
+	} catch {
+		return null;
+	}
+}
+
 function parseBoosts(html) {
+	const stateMatch = html.match(STATE_SCRIPT_RE);
+	if (!stateMatch) return [];
+
+	let data;
+	try {
+		data = JSON.parse(stateMatch[1]);
+	} catch {
+		return [];
+	}
+
+	const events = data?.BoostedBets?.events;
+	if (!Array.isArray(events)) return [];
+
 	const boosts = [];
-	const seenMarketIds = new Set();
-	for (const m of html.matchAll(ENTRY_RE)) {
-		const [, eventDesc, groupId, marketDesc] = m;
-		if (seenMarketIds.has(groupId)) continue; // dédoublonne les répétitions internes à la page
-		seenMarketIds.add(groupId);
+	for (const event of events) {
+		const opponentA = event.opponentA?.label;
+		const opponentB = event.opponentB?.label;
+		const sportLabel = event.path?.sport?.label;
+		const leagueLabel = event.path?.league?.label;
+		const kickoff = formatKickoffTime(event.parsedStart);
 
-		const oddsMatch = marketDesc.match(ODDS_RE);
-		if (!oddsMatch) continue;
-		const [, oldOdds, newOdds, maxStake] = oddsMatch;
+		for (const market of event.groupedMarkets || []) {
+			const marketDesc = market.description;
+			if (!marketDesc) continue;
+			const oddsMatch = marketDesc.match(ODDS_RE);
+			if (!oddsMatch) continue;
+			const [, oldOdds, newOdds, maxStake] = oddsMatch;
 
-		boosts.push({
-			marketId: groupId,
-			eventDesc,
-			description: marketDesc.replace(ODDS_RE, '').replace(/\s+/g, ' ').trim(),
-			oldOdds,
-			newOdds,
-			maxStake: parseInt(maxStake, 10),
-		});
+			boosts.push({
+				marketId: String(market.id),
+				eventName: formatEventName(opponentA, opponentB, leagueLabel, sportLabel),
+				description: marketDesc.replace(ODDS_RE, '').replace(/\s+/g, ' ').trim(),
+				oldOdds,
+				newOdds,
+				maxStake: parseInt(maxStake, 10),
+				kickoff,
+			});
+		}
 	}
 	return boosts;
 }
 
 function formatTelegramMessage(boost) {
-	return (
-		`⚡ COTE BOOSTÉE FLASH — UNIBET\n` +
-		`${boost.eventDesc}\n` +
-		`${boost.description}\n` +
-		`Cote : ${boost.oldOdds} → ${boost.newOdds}\n` +
-		`💰 Mise max : ${boost.maxStake}€\n` +
-		`🔗 ${UNIBET_URL}`
-	);
+	const lines = [
+		`⚡ COTE BOOSTÉE FLASH — UNIBET`,
+		``,
+		boost.eventName,
+		``,
+		boost.description,
+		``,
+		`Cote : ${boost.oldOdds} → ${boost.newOdds}`,
+		`💰 Mise max : ${boost.maxStake}€*`,
+		``,
+		`🔗 ${UNIBET_URL}`,
+		``,
+		`* Mise comptabilisée pour le bilan`,
+	];
+	if (boost.kickoff) {
+		lines.push(``, `Disponible jusqu'à ${boost.kickoff}`);
+	}
+	return lines.join('\n');
 }
 
 async function sendTelegramMessage(env, text) {
