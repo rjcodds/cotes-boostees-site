@@ -1,0 +1,14 @@
+name = "bet365-super-boost"
+main = "index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[triggers]
+crons = ["*/10 * * * *"]
+
+[browser]
+binding = "BROWSER"
+
+[[kv_namespaces]]
+binding = "SEEN_BOOSTS"
+id = "356f69173f6a42c4a5ac22b2d5201d43"
