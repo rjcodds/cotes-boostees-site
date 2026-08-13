@@ -262,6 +262,7 @@ function formatMonitoringMessage(event) {
 		lines.push(``, `Cote : ${boost.oldOdds} → ${boost.newOdds}`);
 	}
 	lines.push(`Mise max : ${boost.maxStake}€`);
+	if (boost.kickoff) lines.push(`Disponible jusqu'à ${boost.kickoff}`);
 	return lines.join('\n');
 }
 

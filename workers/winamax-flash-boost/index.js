@@ -14,8 +14,13 @@ const SEEN_TTL_SECONDS = 6 * 60 * 60; // 6h : évite de reposter la même cote �
 const STAKE_RE = /mise max\s*(\d+)\s*€/i;
 
 const SPORT_EMOJI = {
-	football: '⚽', foot: '⚽', tennis: '🎾', basket: '🏀', nba: '🏀', wnba: '🏀',
-	rugby: '🏉', hand: '🤾', hockey: '🏒', volley: '🏐', baseball: '⚾', mma: '🥊', boxe: '🥊',
+	football: '⚽', foot: '⚽', 'ligue 1': '⚽', 'ligue 2': '⚽', 'ligue europa': '⚽',
+	'champions league': '⚽', 'europa league': '⚽', 'conference league': '⚽',
+	'premier league': '⚽', 'serie a': '⚽', bundesliga: '⚽', liga: '⚽',
+	tennis: '🎾', atp: '🎾', wta: '🎾',
+	basket: '🏀', nba: '🏀', wnba: '🏀',
+	baseball: '⚾', npb: '⚾', kbo: '⚾', mlb: '⚾',
+	rugby: '🏉', hand: '🤾', hockey: '🏒', volley: '🏐', mma: '🥊', boxe: '🥊',
 };
 
 function guessSportEmoji(title) {
@@ -162,6 +167,7 @@ function formatMonitoringMessage(event) {
 		lines.push(``, `Cote : ${boost.oldOdds} → ${boost.newOdds}`);
 	}
 	lines.push(`Mise max : ${boost.maxStake}€`);
+	if (boost.kickoff) lines.push(`Disponible jusqu'à ${boost.kickoff}`);
 	return lines.join('\n');
 }
 
