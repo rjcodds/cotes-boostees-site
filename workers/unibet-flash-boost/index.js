@@ -201,19 +201,76 @@ function formatTelegramMessage(boost) {
 	return lines.join('\n');
 }
 
-async function sendTelegramMessage(env, text) {
+async function sendToChat(env, chatId, text) {
 	const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({
-			chat_id: env.TELEGRAM_CHAT_ID,
+			chat_id: chatId,
 			text,
 			disable_web_page_preview: true,
 		}),
 	});
+	if (res.status === 429) {
+		const body = await res.json().catch(() => ({}));
+		const wait = (body?.parameters?.retry_after || 2) * 1000;
+		await new Promise((r) => setTimeout(r, wait));
+		return sendToChat(env, chatId, text);
+	}
 	if (!res.ok) {
 		const body = await res.text();
 		throw new Error(`Telegram sendMessage failed: ${res.status} ${body}`);
+	}
+}
+
+async function sendTelegramMessage(env, text) {
+	return sendToChat(env, env.TELEGRAM_CHAT_ID, text);
+}
+
+// Suivi perso (usage interne) : compare l'instantané précédent au nouveau et
+// notifie chaque ajout / suppression / variation de cote sur un canal Telegram
+// dédié -- distinct du canal abonnés, jamais le même volume.
+function diffBoosts(prevBoosts, currentBoosts) {
+	const prevByMarket = new Map(prevBoosts.map((b) => [b.marketId, b]));
+	const currentByMarket = new Map(currentBoosts.map((b) => [b.marketId, b]));
+	const events = [];
+
+	for (const [marketId, b] of currentByMarket) {
+		const prevB = prevByMarket.get(marketId);
+		if (!prevB) {
+			events.push({ type: 'add', boost: b });
+		} else if (prevB.newOdds !== b.newOdds) {
+			events.push({ type: 'change', boost: b, prevOdds: prevB.newOdds });
+		}
+	}
+	for (const [marketId, b] of prevByMarket) {
+		if (!currentByMarket.has(marketId)) {
+			events.push({ type: 'remove', boost: b });
+		}
+	}
+	return events;
+}
+
+function formatMonitoringMessage(event) {
+	const { type, boost, prevOdds } = event;
+	const icon = type === 'add' ? '➕' : type === 'remove' ? '➖' : '🔄';
+	const label = type === 'add' ? 'Nouvelle cote' : type === 'remove' ? 'Cote retirée' : 'Cote modifiée';
+	const lines = [`${icon} ${label} — UNIBET`, ``, boost.eventName, boost.description];
+	if (type === 'change') {
+		lines.push(``, `Cote : ${prevOdds} → ${boost.newOdds}`);
+	} else {
+		lines.push(``, `Cote : ${boost.oldOdds} → ${boost.newOdds}`);
+	}
+	lines.push(`Mise max : ${boost.maxStake}€`);
+	return lines.join('\n');
+}
+
+async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
+	if (!env.MONITORING_CHAT_ID || !prevBoosts) return;
+	const events = diffBoosts(prevBoosts, currentBoosts);
+	for (const event of events) {
+		await sendToChat(env, env.MONITORING_CHAT_ID, formatMonitoringMessage(event));
+		await new Promise((r) => setTimeout(r, 350)); // évite le flood control Telegram
 	}
 }
 
@@ -231,6 +288,19 @@ async function checkAndPost(env) {
 	const html = await res.text();
 	const boosts = parseBoosts(html);
 	const eligible = boosts.filter((b) => b.maxStake <= MAX_STAKE_EUR);
+
+	// Lu AVANT d'écraser : sert de base de comparaison pour le suivi perso.
+	const prevRaw = await env.SEEN_BOOSTS.get('current_snapshot');
+	const prevBoosts = prevRaw ? JSON.parse(prevRaw).boosts : null;
+
+	// Instantané complet (toutes les cotes, pas seulement les éligibles flash) pour
+	// le tableau de suivi perso -- lu par /current, jamais re-scrapé à chaque visite.
+	await env.SEEN_BOOSTS.put(
+		'current_snapshot',
+		JSON.stringify({ updatedAt: Date.now(), boosts }),
+		{ expirationTtl: 15 * 60 }
+	);
+	await postMonitoringDiff(env, prevBoosts, boosts);
 
 	let posted = 0;
 	for (const boost of eligible) {
@@ -255,7 +325,13 @@ export default {
 				headers: { 'Content-Type': 'application/json' },
 			});
 		}
-		return new Response('OK. Utilise /run pour déclencher un check manuel.', { status: 200 });
+		if (url.pathname === '/current') {
+			const raw = await env.SEEN_BOOSTS.get('current_snapshot');
+			return new Response(raw || JSON.stringify({ updatedAt: null, boosts: [] }), {
+				headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+			});
+		}
+		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
 
 	async scheduled(event, env, ctx) {
