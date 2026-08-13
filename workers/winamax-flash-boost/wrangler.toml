@@ -1,0 +1,18 @@
+name = "winamax-flash-boost"
+main = "index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Vérifie toutes les 10 minutes : fenêtre "Grosse Cote Boostée" de 30-35 min
+# chez Winamax, donc large marge -- reste largement dans les 10 min/jour de
+# navigateur gratuites de Cloudflare (~4-6s de navigateur par check).
+[triggers]
+crons = ["*/10 * * * *"]
+
+[browser]
+binding = "BROWSER"
+
+# A créer avec : wrangler kv:namespace create SEEN_BOOSTS
+[[kv_namespaces]]
+binding = "SEEN_BOOSTS"
+id = "1051561f98ad443a91b22580c377d92c"
