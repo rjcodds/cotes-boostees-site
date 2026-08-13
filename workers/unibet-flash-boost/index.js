@@ -13,8 +13,11 @@ const SEEN_TTL_SECONDS = 6 * 60 * 60; // 6h : évite de reposter la même cote �
 // Repère chaque paire eventDesc/marketDesc telle qu'elle apparaît dans le JSON
 // embarqué (voir sample capturé sur la page réelle) :
 //   "eventDesc":"N.Osaka vs E.Rybakina","groupId":190560683,"marketDesc":"CB - ... (2,20 -> 2,50 / Mise max 50€) - Match"
+// Les cotes "CB FLASH" utilisent parfois une flèche unicode (→) au lieu de "->",
+// et peuvent avoir une clause en plus entre l'encadré cote/mise et la période
+// (ex: "(Remboursé si non titulaire) - 90 Mins") -- le regex gère les deux cas.
 const ENTRY_RE = /"eventDesc":"([^"]+)","groupId":(\d+),"marketDesc":"([^"]+)"/g;
-const ODDS_RE = /\(([\d,]+)\s*->\s*([\d,]+)\s*\/\s*Mise max\s*(\d+)\s*€\)/;
+const ODDS_RE = /\(([\d,]+)\s*(?:->|→)\s*([\d,]+)\s*\/\s*Mise max\s*(\d+)\s*€\)/;
 
 function parseBoosts(html) {
 	const boosts = [];
@@ -31,7 +34,7 @@ function parseBoosts(html) {
 		boosts.push({
 			marketId: groupId,
 			eventDesc,
-			description: marketDesc.replace(ODDS_RE, '').replace(/\s*-\s*$/, '').trim(),
+			description: marketDesc.replace(ODDS_RE, '').replace(/\s+/g, ' ').trim(),
 			oldOdds,
 			newOdds,
 			maxStake: parseInt(maxStake, 10),

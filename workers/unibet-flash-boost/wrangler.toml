@@ -2,9 +2,9 @@ name = "unibet-flash-boost"
 main = "index.js"
 compatibility_date = "2025-01-01"
 
-# Vérifie la page Unibet toutes les 2 minutes.
+# Vérifie la page Unibet toutes les minutes (fenêtre flash courte : 8-9 min).
 [triggers]
-crons = ["*/2 * * * *"]
+crons = ["*/1 * * * *"]
 
 # A créer avec : wrangler kv:namespace create SEEN_BOOSTS
 # puis coller l'id renvoyé ici.
