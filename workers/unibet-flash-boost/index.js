@@ -193,8 +193,6 @@ function formatTelegramMessage(boost) {
 		`Cote : ${boost.oldOdds} → ${boost.newOdds}`,
 		`💰 Mise max : ${boost.maxStake}€*`,
 		``,
-		`🔗 ${UNIBET_URL}`,
-		``,
 		`* Mise comptabilisée pour le bilan`,
 	];
 	if (boost.kickoff) {
