@@ -188,8 +188,16 @@ async function fetchPreloadedState(env) {
 			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 		);
 		await page.goto(WINAMAX_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-		// Laisse le temps au flux Socket.IO de pousser les cotes dans PRELOADED_STATE.
-		await new Promise((r) => setTimeout(r, 4000));
+		// Sonde au lieu d'attendre systématiquement 4s : dès que Socket.IO a poussé
+		// des cotes dans PRELOADED_STATE (ou après 4s max), on continue -- économise
+		// du temps de navigateur (quota gratuit limité) sans perdre en fiabilité.
+		for (let i = 0; i < 8; i++) {
+			const hasMatches = await page.evaluate(
+				() => Object.keys(window.PRELOADED_STATE?.matches || {}).length > 0
+			);
+			if (hasMatches) break;
+			await new Promise((r) => setTimeout(r, 500));
+		}
 		return await page.evaluate(() => window.PRELOADED_STATE || null);
 	} finally {
 		await browser.close();

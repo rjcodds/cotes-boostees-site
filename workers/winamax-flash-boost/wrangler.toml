@@ -3,11 +3,12 @@ main = "index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Vérifie toutes les 10 minutes : fenêtre "Grosse Cote Boostée" de 30-35 min
-# chez Winamax, donc large marge -- reste largement dans les 10 min/jour de
-# navigateur gratuites de Cloudflare (~4-6s de navigateur par check).
+# Vérifie toutes les 15 minutes : à 10 min, 144 checks/jour dépassaient déjà
+# le budget gratuit (10 min/jour) même sans compter d'autres tests. À 15 min,
+# 96 checks/jour * ~6s reste sous les 600s/jour, avec marge. La fenêtre "Grosse
+# Cote Boostée" dure 30-35 min chez Winamax donc ça laisse 2+ chances de la voir.
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/15 * * * *"]
 
 [browser]
 binding = "BROWSER"
