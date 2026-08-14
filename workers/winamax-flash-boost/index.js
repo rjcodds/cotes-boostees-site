@@ -524,8 +524,12 @@ function parseLegs(eventName, description, sportKey) {
 			},
 		];
 	}
-	if (winningTeam || /resultat du match|resultat final|1x2/i.test(d)) {
-		// "TeamX gagne le match" (ou "Résultat du match" générique), sans total ni marge associée.
+	// "TeamX gagne" ou "TeamX gagne le match", et RIEN d'autre après -- sinon
+	// c'est un marché différent (score exact "1-0, 2-0 ou 3-0", "gagne les deux
+	// mi-temps", etc.) qui ne doit surtout pas être confondu avec la victoire
+	// simple : mieux vaut n'afficher aucune ligne Pinnacle qu'une mauvaise.
+	const isPlainWin = winningTeam && /^[A-ZÀ-Ý][\w .'-]*?\s+gagne(\s+le\s+match)?\s*[.!]?\s*$/i.test(d.trim());
+	if (isPlainWin || /resultat du match|resultat final|1x2/i.test(d)) {
 		return [{ type: 'moneyline', teamA, teamB, sport: sportKey }];
 	}
 	return null;
