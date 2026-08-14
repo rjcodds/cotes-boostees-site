@@ -85,7 +85,12 @@ function parseBoosts(state) {
 
 		const eventName = (match.title || '').replace(/^Cote Boost[ée]e\s*:\s*/i, '').trim();
 		const sportEmoji = guessSportEmoji(match.title || '');
-		const tournamentName = state.tournaments?.[String(match.tournamentId)]?.tournamentName || null;
+		// Pour les paris boostés, tournamentId pointe souvent vers un regroupement
+		// générique ("Tous les paris") plutôt que la vraie compétition -- inutile
+		// comme indice de matching, on le traite comme absent plutôt que de faire
+		// perdre une tentative de correspondance par nom à findPinnacleReference.
+		const rawTournamentName = state.tournaments?.[String(match.tournamentId)]?.tournamentName || null;
+		const tournamentName = rawTournamentName && !/tous les paris/i.test(rawTournamentName) ? rawTournamentName : null;
 
 		boosts.push({
 			marketId: String(bet.betId),
@@ -598,7 +603,7 @@ async function scanAllLeaguesForLegs(legs, leagueList, skipIds) {
 	return null;
 }
 
-async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
+async function findPinnacleReferenceForSport(eventName, description, leagueLabel, sportKey) {
 	const legs = parseLegs(eventName, description, sportKey);
 	if (!legs || !legs.length) return null;
 
@@ -632,6 +637,21 @@ async function findPinnacleReference(eventName, description, leagueLabel, sportK
 		exact: true, // matchs différents = événements indépendants, pas d'approximation
 		legCount: resolved.length,
 	};
+}
+
+// Winamax ne fournit pas de champ sport fiable pour ses cotes boostées (juste
+// un titre libre, souvent sans aucun mot-clé sport dedans -- voir
+// guessSportEmoji) : on essaie chaque sport supporté à tour de rôle plutôt que
+// d'abandonner. Le parsing du texte (parseLegs) est gratuit et identique quel
+// que soit le sport essayé ; seul un sport qui matche vraiment déclenche des
+// appels réseau. Foot en premier : de loin le plus fréquent.
+async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
+	const sportsToTry = sportKey ? [sportKey] : Object.keys(PINNACLE_SPORTS);
+	for (const sport of sportsToTry) {
+		const ref = await findPinnacleReferenceForSport(eventName, description, leagueLabel, sport);
+		if (ref) return ref;
+	}
+	return null;
 }
 
 function formatPinnacleReference(ref) {

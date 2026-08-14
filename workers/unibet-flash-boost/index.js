@@ -710,7 +710,7 @@ async function scanAllLeaguesForLegs(legs, leagueList, skipIds) {
 	return null;
 }
 
-async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
+async function findPinnacleReferenceForSport(eventName, description, leagueLabel, sportKey) {
 	const legs = parseLegs(eventName, description, sportKey);
 	if (!legs || !legs.length) return null;
 
@@ -744,6 +744,21 @@ async function findPinnacleReference(eventName, description, leagueLabel, sportK
 		exact: true, // matchs différents = événements indépendants, pas d'approximation
 		legCount: resolved.length,
 	};
+}
+
+// Quand le sport n'est pas connu avec certitude (ex: Winamax ne fournit pas de
+// champ sport fiable pour ses cotes boostées -- juste un titre libre, souvent
+// sans aucun mot-clé sport dedans), on essaie chaque sport supporté à tour de
+// rôle plutôt que d'abandonner. Le parsing du texte (parseLegs) est gratuit et
+// identique quel que soit le sport essayé ; seul un sport qui matche vraiment
+// déclenche des appels réseau. Foot en premier : de loin le plus fréquent.
+async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
+	const sportsToTry = sportKey ? [sportKey] : Object.keys(PINNACLE_SPORTS);
+	for (const sport of sportsToTry) {
+		const ref = await findPinnacleReferenceForSport(eventName, description, leagueLabel, sport);
+		if (ref) return ref;
+	}
+	return null;
 }
 
 function formatPinnacleReference(ref) {
