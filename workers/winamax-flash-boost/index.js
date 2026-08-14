@@ -31,6 +31,18 @@ function guessSportEmoji(title) {
 	return '⚡';
 }
 
+// Sports pour lesquels Pinnacle expose une recherche par compétition sans
+// authentification (voir PINNACLE_SPORTS plus bas) -- les autres (rugby,
+// handball, volley, boxe) sont bloqués côté API (401), donc ignorés ici.
+const SPORT_KEY_BY_EMOJI = {
+	'⚽': 'football',
+	'🏀': 'basketball',
+	'🎾': 'tennis',
+	'⚾': 'baseball',
+	'🏒': 'hockey',
+	'🥊': 'mma',
+};
+
 function formatOdd(n) {
 	return Number(n).toFixed(2).replace('.', ',');
 }
@@ -72,11 +84,15 @@ function parseBoosts(state) {
 		if (!outcome || newOdd == null || oldOdd == null) continue;
 
 		const eventName = (match.title || '').replace(/^Cote Boost[ée]e\s*:\s*/i, '').trim();
+		const sportEmoji = guessSportEmoji(match.title || '');
+		const tournamentName = state.tournaments?.[String(match.tournamentId)]?.tournamentName || null;
 
 		boosts.push({
 			marketId: String(bet.betId),
 			eventName,
-			sportEmoji: guessSportEmoji(match.title || ''),
+			sportEmoji,
+			sport: SPORT_KEY_BY_EMOJI[sportEmoji] || null,
+			league: tournamentName,
 			description: outcome.label,
 			oldOdds: formatOdd(oldOdd),
 			newOdds: formatOdd(newOdd),
@@ -139,62 +155,53 @@ async function sendTelegramMessage(env, text) {
 // Gère aussi les combos multi-matchs (paris sur plusieurs rencontres à la fois).
 // Silencieux si rien de fiable n'est trouvé.
 
-const PINNACLE_LEAGUES = [
-	{ id: 1741, name: 'Argentina - Cup' },
-	{ id: 213666, name: 'Australia - Queensland Premier League' },
-	{ id: 1792, name: 'Austria - Bundesliga' },
-	{ id: 6416, name: 'Belarus - Premier League' },
-	{ id: 1818, name: 'Belgium - Challenger Pro League' },
-	{ id: 1817, name: 'Belgium - Pro League' },
-	{ id: 1834, name: 'Brazil - Serie A' },
-	{ id: 1835, name: 'Brazil - Serie B' },
-	{ id: 1875, name: 'CONMEBOL - Copa Libertadores' },
-	{ id: 2472, name: 'CONMEBOL - Copa Sudamericana' },
-	{ id: 205098, name: 'Canada - Premier League' },
-	{ id: 1913, name: 'Denmark - Superliga' },
-	{ id: 5598, name: 'Ecuador - Serie A' },
-	{ id: 1982, name: 'England - EFL Cup' },
-	{ id: 1980, name: 'England - Premier League' },
-	{ id: 2036, name: 'France - Ligue 1' },
-	{ id: 2037, name: 'France - Ligue 2' },
-	{ id: 2035, name: 'France - Super Cup' },
-	{ id: 1842, name: 'Germany - Bundesliga' },
-	{ id: 1843, name: 'Germany - Bundesliga 2' },
-	{ id: 2054, name: 'Germany - Super Cup' },
-	{ id: 2102, name: 'Iceland - Premier League' },
-	{ id: 2124, name: 'Ireland - FAI Cup' },
-	{ id: 2147, name: 'Italy - Cup' },
-	{ id: 2436, name: 'Italy - Serie A' },
-	{ id: 2438, name: 'Italy - Serie B' },
-	{ id: 1928, name: 'Netherlands - Eredivisie' },
-	{ id: 205939, name: 'North America - Leagues Cup' },
-	{ id: 2374, name: 'Poland - Ekstraklasa' },
-	{ id: 2386, name: 'Portugal - Primeira Liga' },
-	{ id: 2406, name: 'Russia - Premier League' },
-	{ id: 10419, name: 'Saudi Arabia - Pro League' },
-	{ id: 4998, name: 'Scotland - League Cup' },
-	{ id: 2434, name: 'Serbia - Super Liga' },
-	{ id: 2453, name: 'Slovakia - Super Liga' },
-	{ id: 2196, name: 'Spain - La Liga' },
-	{ id: 2432, name: 'Spain - Segunda Division' },
-	{ id: 8126, name: 'UAE - Pro League' },
-	{ id: 2627, name: 'UEFA - Champions League' },
-	{ id: 205451, name: 'UEFA - Champions League Qualifiers' },
-	{ id: 2632, name: 'UEFA - Europa League Qualifiers' },
-	{ id: 271382, name: 'UEFA - Conference League Qualifiers' },
-	{ id: 2663, name: 'USA - Major League Soccer' },
-	{ id: 2650, name: 'Ukraine - Premier League' },
-	{ id: 205369, name: 'Uruguay - Segunda Division' },
-	{ id: 2678, name: 'Wales - Premier League' },
+// Sports Pinnacle accessibles sans authentification via l'API "guest" publique
+// (vérifié empiriquement : handball, volleyball, rugby, boxe et cyclisme renvoient
+// tous 401 "No authorization token provided" sur ce endpoint -- probablement une
+// restriction de licence par sport, pas contournable côté client).
+const PINNACLE_SPORTS = {
+	football: 29, // "Soccer" chez Pinnacle -- ne pas confondre avec leur sport "Football" (NFL)
+	basketball: 4,
+	tennis: 33,
+	baseball: 3,
+	hockey: 19,
+	mma: 22,
+};
+
+// Compétitions continentales -> pas de préfixe pays chez Pinnacle (elles sont
+// préfixées "UEFA -"). Grands championnats domestiques -> préfixe pays Pinnacle.
+// Sert à départager les homonymes entre pays ("Premier League" existe dans ~20
+// pays chez Pinnacle) sans avoir à tous les essayer.
+const EUROPEAN_COMPETITION_KEYWORDS = [
+	'champions league',
+	'ligue des champions',
+	'europa league',
+	'ligue europa',
+	'conference league',
+];
+const DOMESTIC_LEAGUE_COUNTRY = [
+	[/ligue 1|ligue 2|coupe de france/i, 'France'],
+	[/premier league|fa cup|efl cup|championship anglais/i, 'England'],
+	[/serie a|serie b|coppa italia/i, 'Italy'],
+	[/liga(?!ue)|copa del rey/i, 'Spain'],
+	[/bundesliga|dfb.?pokal/i, 'Germany'],
+	[/eredivisie/i, 'Netherlands'],
+	[/liga portugal|primeira liga/i, 'Portugal'],
+	[/jupiler|pro league belge/i, 'Belgium'],
 ];
 
-const PINNACLE_LEAGUES_BASKETBALL = [
-	{ id: 487, name: 'NBA' },
-	{ id: 578, name: 'WNBA' },
-];
+function leagueCountryHint(leagueLabel) {
+	const clean = (leagueLabel || '').trim();
+	if (!clean) return null;
+	if (EUROPEAN_COMPETITION_KEYWORDS.some((k) => clean.toLowerCase().includes(k))) return 'UEFA';
+	for (const [re, country] of DOMESTIC_LEAGUE_COUNTRY) {
+		if (re.test(clean)) return country;
+	}
+	return null;
+}
 
-let leagueCache = { football: null, basketball: null };
-let leagueCacheAt = { football: 0, basketball: 0 };
+let leagueListCache = {};
+let leagueListCacheAt = {};
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 function stripDiacritics(s) {
@@ -268,22 +275,85 @@ async function fetchLeagueData(leagueId) {
 
 // Récupère toutes les grandes ligues d'un sport en parallèle, avec un court
 // cache mémoire (utile si plusieurs paris consécutifs se résolvent pendant le même check).
-async function fetchAllLeagues(sport = 'football') {
-	if (leagueCache[sport] && Date.now() - leagueCacheAt[sport] < CACHE_TTL_MS) return leagueCache[sport];
-	const list = sport === 'basketball' ? PINNACLE_LEAGUES_BASKETBALL : PINNACLE_LEAGUES;
-	const results = await Promise.all(
-		list.map(async (league) => {
-			try {
-				const data = await fetchLeagueData(league.id);
-				return data ? { league, ...data } : null;
-			} catch {
-				return null;
-			}
-		})
-	);
-	leagueCache[sport] = results.filter(Boolean);
-	leagueCacheAt[sport] = Date.now();
-	return leagueCache[sport];
+// Liste légère (id + nom, pas de matchups/markets) de toutes les compétitions
+// actuellement actives chez Pinnacle pour un sport -- remplace l'ancienne liste
+// figée à maintenir à la main. Courte mise en cache mémoire.
+async function fetchLeagueList(sportKey) {
+	const sportId = PINNACLE_SPORTS[sportKey];
+	if (!sportId) return [];
+	if (leagueListCache[sportKey] && Date.now() - leagueListCacheAt[sportKey] < CACHE_TTL_MS) {
+		return leagueListCache[sportKey];
+	}
+	try {
+		const res = await fetch(`https://guest.api.arcadia.pinnacle.com/0.1/sports/${sportId}/leagues`, {
+			headers: {
+				'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			},
+		});
+		if (!res.ok) return [];
+		const data = await res.json();
+		if (!Array.isArray(data)) return []; // ex: 401 -> objet d'erreur, pas un tableau
+		const list = data.map((l) => ({ id: l.id, name: l.name }));
+		leagueListCache[sportKey] = list;
+		leagueListCacheAt[sportKey] = Date.now();
+		return list;
+	} catch {
+		return [];
+	}
+}
+
+function normalizeLeagueName(name) {
+	return stripDiacritics(name || '')
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, ' ')
+		.trim();
+}
+
+function scoreLeagueName(name, label) {
+	if (name === label) return 4;
+	if (name.endsWith(` ${label}`) || name.endsWith(`- ${label}`)) return 3;
+	if (name.includes(label)) return 2;
+	const labelWords = [...new Set(label.split(' ').filter((w) => w.length > 2))];
+	const nameWords = [...new Set(name.split(' ').filter((w) => w.length > 2))];
+	if (labelWords.length) {
+		const overlap = labelWords.filter((w) => nameWords.some((x) => wordsFuzzyMatch(w, x))).length;
+		if (overlap === labelWords.length) return 1;
+	}
+	return 0;
+}
+
+// Fait correspondre le libellé de compétition Unibet/Winamax (ex: "Ligue 1",
+// "NBA", "ATP Cincinnati") aux compétitions Pinnacle du même sport (ex:
+// "France - Ligue 1"). Gère aussi les suffixes sponsor absents chez Pinnacle
+// ("Ligue 2 BKT", "Ligue 1 McDonald's") en retentant sans le(s) dernier(s) mot(s).
+// Retourne les meilleurs candidats en premier -- utile quand plusieurs pays
+// partagent un nom générique : on essaiera chaque candidat jusqu'à ce qu'un
+// match d'équipes soit trouvé, au lieu de se figer sur le premier venu.
+function matchLeaguesByLabel(leagueList, leagueLabel, countryHint) {
+	const raw = normalizeLeagueName(leagueLabel);
+	if (!raw) return [];
+	const hint = countryHint ? normalizeLeagueName(countryHint) : null;
+
+	const words = raw.split(' ').filter(Boolean);
+	const labelVariants = [raw];
+	if (words.length > 1) labelVariants.push(words.slice(0, -1).join(' '));
+	if (words.length > 2) labelVariants.push(words.slice(0, -2).join(' '));
+
+	const scored = [];
+	for (const league of leagueList) {
+		const name = normalizeLeagueName(league.name);
+		if (!name) continue;
+		let bestScore = 0;
+		for (const label of labelVariants) {
+			if (!label) continue;
+			bestScore = Math.max(bestScore, scoreLeagueName(name, label));
+		}
+		if (bestScore === 0) continue;
+		if (hint && (name.startsWith(`${hint} `) || name.startsWith(`${hint}-`))) bestScore += 2;
+		scored.push({ league, score: bestScore });
+	}
+	scored.sort((a, b) => b.score - a.score);
+	return scored.slice(0, 8).map((s) => s.league);
 }
 
 function priceForParticipant(markets, matchupId, participantId) {
@@ -345,6 +415,8 @@ function findMoneyline(leagues, teamA, teamB) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
+				!m.parentId && // exclut les marchés spéciaux/props (ex: "team to score first") qui
+				// peuvent partager les mêmes noms d'équipes que le match principal
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -361,6 +433,7 @@ function findTotal(leagues, teamA, teamB, side, points) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
+				!m.parentId &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -377,30 +450,26 @@ function findTotal(leagues, teamA, teamB, side, points) {
 
 // --- Analyse du texte français libre des cotes boostées ---
 
-// Detecte le sport a partir de l'unite mentionnee dans le texte -- "buts" =
-// football, "points" = basketball. Determine quelles ligues Pinnacle chercher.
-function detectSport(unit) {
-	return /points?/i.test(unit) ? 'basketball' : 'football';
-}
-
 // Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
 // marge / total buts-ou-points). Le texte peut décrire une seule leg (pari
 // simple ou combiné même-match) ou plusieurs legs sur des matchs différents
-// (combo multi-matchs). Chaque leg porte son "sport" (football ou basketball).
-function parseLegs(eventName, description) {
+// (combo multi-matchs). Le sport est déterminé une seule fois, en amont, à
+// partir du sport réel de l'événement (pas d'une unité ambiguë dans le texte --
+// "buts" et "points" existent dans plusieurs sports selon le contexte).
+function parseLegs(eventName, description, sportKey) {
+	if (!sportKey) return null; // sport non supporté par Pinnacle -- on ignore
 	const d = stripDiacritics(description || '');
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
 	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.
-	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(buts?|points?)\s+ou\s+plus/i);
+	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(?:buts?|points?)\s+ou\s+plus/i);
 	if (marginAll) {
 		const margin = parseInt(marginAll[1], 10);
-		const sport = detectSport(marginAll[2]);
 		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
 		const legs = [];
 		let m;
 		while ((m = teamPattern.exec(d)) !== null) {
-			legs.push({ type: 'margin', team: m[1].trim(), margin, sport });
+			legs.push({ type: 'margin', team: m[1].trim(), margin, sport: sportKey });
 		}
 		if (legs.length >= 2) return legs;
 	}
@@ -412,8 +481,8 @@ function parseLegs(eventName, description) {
 
 	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
 
-	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(buts?|points?)/i);
-	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(buts?|points?)\s+ou\s+plus/i);
+	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?)/i);
+	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?)\s+ou\s+plus/i);
 
 	if (winningTeam && totalMatch) {
 		return [
@@ -423,7 +492,7 @@ function parseLegs(eventName, description) {
 				opponent: winningTeam === teamA ? teamB : teamA,
 				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
 				points: parseFloat(totalMatch[2].replace(',', '.')),
-				sport: detectSport(totalMatch[3]),
+				sport: sportKey,
 			},
 		];
 	}
@@ -434,7 +503,7 @@ function parseLegs(eventName, description) {
 				team: winningTeam,
 				opponent: winningTeam === teamA ? teamB : teamA,
 				margin: parseInt(marginMatch[1], 10),
-				sport: detectSport(marginMatch[2]),
+				sport: sportKey,
 			},
 		];
 	}
@@ -446,25 +515,15 @@ function parseLegs(eventName, description) {
 				teamB,
 				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
 				points: parseFloat(totalMatch[2].replace(',', '.')),
-				sport: detectSport(totalMatch[3]),
+				sport: sportKey,
 			},
 		];
 	}
-	if (/resultat du match|resultat final|1x2/i.test(d) && !winningTeam) {
-		return [{ type: 'moneyline', teamA, teamB, sport: sportFromEventName(eventName) }];
-	}
-	if (winningTeam) {
-		// "TeamX gagne le match" seul, sans total ni marge associee.
-		return [{ type: 'moneyline', teamA, teamB, sport: sportFromEventName(eventName) }];
+	if (winningTeam || /resultat du match|resultat final|1x2/i.test(d)) {
+		// "TeamX gagne le match" (ou "Résultat du match" générique), sans total ni marge associée.
+		return [{ type: 'moneyline', teamA, teamB, sport: sportKey }];
 	}
 	return null;
-}
-
-// Fallback quand la description ne contient aucune unite ("buts"/"points") --
-// ex: "TeamX gagne le match" seul. Le sport est alors déduit de l'emoji en
-// tête de eventName (posé par formatEventName / SPORT_EMOJI).
-function sportFromEventName(eventName) {
-	return (eventName || '').trim().startsWith('🏀') ? 'basketball' : 'football';
 }
 
 function extractWinner(d) {
@@ -479,8 +538,11 @@ function splitTeams(eventName) {
 	return [parts[0].trim(), parts[1].trim().replace(/\s*[\u{1F1E6}-\u{1F1FF}]+\s*$/gu, '').trim()];
 }
 
-async function resolveLeg(leg) {
-	const leagues = await fetchAllLeagues(leg.sport || 'football');
+// leagueData : { league: {id, name}, matchups, markets } pour LA compétition
+// Pinnacle déjà identifiée comme correspondant au libellé Unibet/Winamax --
+// voir findPinnacleReference pour la sélection du candidat.
+async function resolveLeg(leg, leagueData) {
+	const leagues = [leagueData];
 	if (leg.type === 'winAndTotal') {
 		const direct = findCombinedWinTotal(leagues, leg.team, leg.side, leg.points);
 		if (direct) return direct;
@@ -503,16 +565,35 @@ async function resolveLeg(leg) {
 	return null;
 }
 
-async function findPinnacleReference(eventName, description) {
-	const legs = parseLegs(eventName, description);
-	if (!legs || !legs.length) return null;
-
+// Essaie chaque leg contre une compétition candidate ; abandonne dès qu'une
+// leg échoue (pas de résultat partiel trompeur), sinon renvoie tous les
+// résultats résolus.
+async function resolveLegsAgainstLeague(legs, league) {
+	const leagueData = await fetchLeagueData(league.id);
+	if (!leagueData) return null;
 	const resolved = [];
 	for (const leg of legs) {
-		const r = await resolveLeg(leg);
-		if (!r) return null; // une seule leg non résolue => on n'affiche rien (pas de résultat partiel trompeur)
+		const r = await resolveLeg(leg, { league, ...leagueData });
+		if (!r) return null;
 		resolved.push(r);
 	}
+	return resolved;
+}
+
+async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
+	const legs = parseLegs(eventName, description, sportKey);
+	if (!legs || !legs.length) return null;
+
+	const leagueList = await fetchLeagueList(sportKey);
+	const candidates = matchLeaguesByLabel(leagueList, leagueLabel, leagueCountryHint(leagueLabel));
+	if (!candidates.length) return null; // compétition introuvable chez Pinnacle -- silencieux
+
+	let resolved = null;
+	for (const candidate of candidates) {
+		resolved = await resolveLegsAgainstLeague(legs, candidate);
+		if (resolved) break;
+	}
+	if (!resolved) return null;
 
 	if (resolved.length === 1 && resolved[0].moneyline) {
 		return { type: 'moneyline', league: resolved[0].league, moneyline: resolved[0].moneyline };
@@ -593,7 +674,7 @@ async function formatMonitoringMessage(event) {
 	// pari équivalent (victoire simple / total buts) existe sur une grande ligue.
 	if (type === 'add') {
 		try {
-			const ref = await findPinnacleReference(boost.eventName, boost.description);
+			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
 			const refLine = formatPinnacleReference(ref);
 			if (refLine) lines.push(``, refLine);
 		} catch {
@@ -620,7 +701,11 @@ async function fetchPreloadedState(env) {
 		await page.setUserAgent(
 			'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 		);
-		await page.goto(WINAMAX_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+		// domcontentloaded + polling ensuite (au lieu de networkidle2) : plus rapide
+		// et plus robuste si Cloudflare Browser Rendering est ralenti/soft-bloqué par
+		// Winamax -- on ne veut pas brûler tout le timeout à chaque check et épuiser
+		// le quota gratuit (10 min/jour) en quelques heures.
+		await page.goto(WINAMAX_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
 		// Sonde au lieu d'attendre systématiquement 4s : dès que Socket.IO a poussé
 		// des cotes dans PRELOADED_STATE (ou après 4s max), on continue -- économise
 		// du temps de navigateur (quota gratuit limité) sans perdre en fiabilité.
@@ -669,10 +754,17 @@ export default {
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		if (url.pathname === '/run') {
-			const result = await checkAndPost(env);
-			return new Response(JSON.stringify(result), {
-				headers: { 'Content-Type': 'application/json' },
-			});
+			try {
+				const result = await checkAndPost(env);
+				return new Response(JSON.stringify(result), {
+					headers: { 'Content-Type': 'application/json' },
+				});
+			} catch (e) {
+				return new Response(JSON.stringify({ ok: false, error: String(e) }), {
+					status: 500,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			}
 		}
 		if (url.pathname === '/current') {
 			const raw = await env.SEEN_BOOSTS.get('current_snapshot');
@@ -684,6 +776,8 @@ export default {
 	},
 
 	async scheduled(event, env, ctx) {
-		ctx.waitUntil(checkAndPost(env));
+		ctx.waitUntil(
+			checkAndPost(env).catch((e) => console.error('checkAndPost failed:', e))
+		);
 	},
 };
