@@ -523,6 +523,51 @@ function findWinningMargin(leagues, teamName, minMargin) {
 	return null;
 }
 
+// Marché "Correct Score" -- somme les probabilités des scores exacts demandés
+// ("gagne 1-0, 2-0 ou 3-0"). Exact : Pinnacle publie une cote par score exact,
+// pas une approximation par multiplication de marchés indépendants.
+function findCorrectScoreSum(leagues, teamName, opponentName, scoreLines) {
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			if (m.special?.description !== 'Correct Score') continue;
+			const parent = matchups.find((p) => p.id === m.parentId);
+			const parentNames = (parent?.participants || []).map((p) => p.name);
+			if (!parentNames.some((n) => teamsMatch(n, teamName)) || !parentNames.some((n) => teamsMatch(n, opponentName))) {
+				continue;
+			}
+
+			// Tout ou rien : si un des scores exacts demandés est introuvable côté
+			// Pinnacle, on n'affiche rien plutôt qu'une somme partielle (qui sous-
+			// estimerait la vraie probabilité, donc gonflerait la cote affichée).
+			let probSum = 0;
+			let allFound = true;
+			for (const [teamScore, oppScore] of scoreLines) {
+				const part = (m.participants || []).find((p) => {
+					const sm = (p.name || '').match(/^(.+?)\s+(\d+),\s*(.+?)\s+(\d+)$/);
+					if (!sm) return false;
+					const [, n1, s1, n2, s2] = sm;
+					if (teamsMatch(n1, teamName) && teamsMatch(n2, opponentName)) {
+						return parseInt(s1, 10) === teamScore && parseInt(s2, 10) === oppScore;
+					}
+					if (teamsMatch(n2, teamName) && teamsMatch(n1, opponentName)) {
+						return parseInt(s2, 10) === teamScore && parseInt(s1, 10) === oppScore;
+					}
+					return false;
+				});
+				const price = part ? priceForParticipant(markets, m.id, part.id) : null;
+				if (price == null) {
+					allFound = false;
+					break;
+				}
+				probSum += 1 / americanToDecimal(price);
+			}
+			if (!allFound || !probSum) continue;
+			return { league: league.name, decimal: 1 / probSum, exact: true };
+		}
+	}
+	return null;
+}
+
 function findMoneyline(leagues, teamA, teamB) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
@@ -586,6 +631,28 @@ function parseLegs(eventName, description, sportKey) {
 		if (legs.length >= 2) return legs;
 	}
 
+	// Combo multi-matchs sur total : "Plus/Moins de X buts/points/runs lors de
+	// chacun des matchs suivants : TeamA - TeamB et TeamC - TeamD[, TeamE - TeamF]"
+	// -- matchs différents = événements indépendants, multiplication exacte.
+	const multiTotalMatch = d.match(
+		/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)\s+(?:lors de |dans )?chacun des matchs suivants\s*:\s*(.+)/i
+	);
+	if (multiTotalMatch) {
+		const side = /plus/i.test(multiTotalMatch[1]) ? 'over' : 'under';
+		const points = parseFloat(multiTotalMatch[2].replace(',', '.'));
+		const pairs = multiTotalMatch[3]
+			.split(/,\s*|\s+et\s+/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		const legs = [];
+		for (const pair of pairs) {
+			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s*-\s*([A-ZÀ-Ý][\w .'-]*?)$/);
+			if (!m2) continue;
+			legs.push({ type: 'total', teamA: m2[1].trim(), teamB: m2[2].trim(), side, points, sport: sportKey });
+		}
+		if (legs.length >= 2) return legs;
+	}
+
 	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts/points"
 	const teams = splitTeams(eventName);
 	if (!teams) return null;
@@ -595,6 +662,9 @@ function parseLegs(eventName, description, sportKey) {
 
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?)/i);
 	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?)\s+ou\s+plus/i);
+	const correctScoreMatch =
+		winningTeam &&
+		d.match(/gagne\s+le\s+match\s+((?:\d+\s*-\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*-\s*\d+)\.?\s*$/i);
 
 	if (winningTeam && totalMatch) {
 		return [
@@ -631,10 +701,27 @@ function parseLegs(eventName, description, sportKey) {
 			},
 		];
 	}
+	if (correctScoreMatch) {
+		// "TeamX gagne le match A-B, C-D ou E-F" -- somme exacte des scores exacts
+		// concernés via le marché "Correct Score" de Pinnacle.
+		const scoreLines = [...correctScoreMatch[1].matchAll(/(\d+)\s*-\s*(\d+)/g)].map((m) => [
+			parseInt(m[1], 10),
+			parseInt(m[2], 10),
+		]);
+		return [
+			{
+				type: 'correctScore',
+				team: winningTeam,
+				opponent: winningTeam === teamA ? teamB : teamA,
+				scoreLines,
+				sport: sportKey,
+			},
+		];
+	}
 	// "TeamX gagne" ou "TeamX gagne le match", et RIEN d'autre après -- sinon
-	// c'est un marché différent (score exact "1-0, 2-0 ou 3-0", "gagne les deux
-	// mi-temps", etc.) qui ne doit surtout pas être confondu avec la victoire
-	// simple : mieux vaut n'afficher aucune ligne Pinnacle qu'une mauvaise.
+	// c'est un marché différent ("gagne les deux mi-temps" par ex.) qui ne doit
+	// surtout pas être confondu avec la victoire simple : mieux vaut n'afficher
+	// aucune ligne Pinnacle qu'une mauvaise.
 	const isPlainWin = winningTeam && /^[A-ZÀ-Ý][\w .'-]*?\s+gagne(\s+le\s+match)?\s*[.!]?\s*$/i.test(d.trim());
 	if (isPlainWin || /resultat du match|resultat final|1x2/i.test(d)) {
 		return [{ type: 'moneyline', teamA, teamB, sport: sportKey }];
@@ -669,6 +756,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'total') {
 		return findTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points);
+	}
+	if (leg.type === 'correctScore') {
+		return findCorrectScoreSum(leagues, leg.team, leg.opponent, leg.scoreLines);
 	}
 	if (leg.type === 'moneyline') {
 		const found = findMoneyline(leagues, leg.teamA, leg.teamB);
@@ -744,6 +834,10 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 	return {
 		type: 'combo',
 		legues: [...new Set(resolved.map((r) => r.league))],
+		legs: resolved.map((r, i) => ({
+			label: legs[i].teamA ? `${legs[i].teamA} - ${legs[i].teamB}` : legs[i].team,
+			decimal: r.decimal,
+		})),
 		decimal: 1 / probProduct,
 		exact: true, // matchs différents = événements indépendants, pas d'approximation
 		legCount: resolved.length,
@@ -779,7 +873,9 @@ function formatPinnacleReference(ref) {
 		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}`;
 	}
 	if (ref.type === 'combo') {
-		return `📊 Pinnacle (combo ${ref.legCount} matchs, ${ref.legues.join(' + ')}) : ${ref.decimal.toFixed(2)}`;
+		const breakdown = ref.legs.map((l) => `${l.label} : ${l.decimal.toFixed(2)}`).join('\n');
+		const product = ref.legs.map((l) => l.decimal.toFixed(2)).join(' × ');
+		return `📊 Pinnacle (combo ${ref.legCount} matchs) :\n${breakdown}\n${product} = ${ref.decimal.toFixed(2)}`;
 	}
 	return null;
 }
