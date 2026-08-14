@@ -132,17 +132,18 @@ async function sendTelegramMessage(env, text) {
 	return sendToChat(env, env.TELEGRAM_CHAT_ID, text);
 }
 
-// Recherche une cote de référence Pinnacle (bookmaker "sharp") pour une cote
-// boostée détectée sur Unibet/Winamax -- limité aux grandes compétitions et
-// aux paris simples (victoire/nul/défaite, total de buts). Silencieux si rien
-// n'est trouvé : beaucoup de paris boostés (spéciaux, exotiques) n'ont pas
-// d'équivalent direct.
+// Recherche une cote de référence Pinnacle pour une cote boostée détectée sur
+// Unibet/Winamax. Couvre : victoire simple, total buts, marge de victoire
+// ("gagne de N buts ou plus"), et le marché combiné direct "Équipe & Over/Under"
+// quand Pinnacle le propose (pas d'approximation nécessaire dans ce cas).
+// Gère aussi les combos multi-matchs (paris sur plusieurs rencontres à la fois).
+// Silencieux si rien de fiable n'est trouvé.
 
 const PINNACLE_LEAGUES = [
 	{ id: 1980, name: 'England - Premier League' },
 	{ id: 2036, name: 'France - Ligue 1' },
 	{ id: 2037, name: 'France - Ligue 2' },
-	{ id: 2035, name: 'France - Super Cup' }, // Trophée des Champions
+	{ id: 2035, name: 'France - Super Cup' },
 	{ id: 1842, name: 'Germany - Bundesliga' },
 	{ id: 1843, name: 'Germany - Bundesliga 2' },
 	{ id: 2054, name: 'Germany - Super Cup' },
@@ -154,6 +155,10 @@ const PINNACLE_LEAGUES = [
 	{ id: 271382, name: 'UEFA - Conference League Qualifiers' },
 	{ id: 205451, name: 'UEFA - Champions League Qualifiers' },
 ];
+
+let leagueCache = null;
+let leagueCacheAt = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 function stripDiacritics(s) {
 	return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -167,39 +172,43 @@ function normalizeTeam(name) {
 		.trim();
 }
 
+function levenshtein(a, b) {
+	const m = a.length, n = b.length;
+	if (!m) return n;
+	if (!n) return m;
+	let prev = Array.from({ length: n + 1 }, (_, j) => j);
+	for (let i = 1; i <= m; i++) {
+		const cur = [i];
+		for (let j = 1; j <= n; j++) {
+			cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1] : 1 + Math.min(prev[j - 1], prev[j], cur[j - 1]);
+		}
+		prev = cur;
+	}
+	return prev[n];
+}
+
+// Compare mot a mot avec une petite tolerance d'edit-distance : couvre les
+// variantes orthographiques entre langues (Salzbourg/Salzburg, etc.) sans
+// avoir besoin d'une table de traduction figee.
+function wordsFuzzyMatch(wa, wb) {
+	if (wa === wb) return true;
+	if (wa.length < 4 || wb.length < 4) return false;
+	const maxDist = wa.length > 7 || wb.length > 7 ? 2 : 1;
+	return levenshtein(wa, wb) <= maxDist;
+}
+
 function teamsMatch(a, b) {
 	const na = normalizeTeam(a);
 	const nb = normalizeTeam(b);
 	if (!na || !nb) return false;
 	if (na === nb) return true;
 	if (na.includes(nb) || nb.includes(na)) return true;
-	const wordsA = new Set(na.split(' ').filter((w) => w.length > 2));
-	const wordsB = new Set(nb.split(' ').filter((w) => w.length > 2));
-	if (!wordsA.size || !wordsB.size) return false;
+	const wordsA = [...new Set(na.split(' ').filter((w) => w.length > 2))];
+	const wordsB = [...new Set(nb.split(' ').filter((w) => w.length > 2))];
+	if (!wordsA.length || !wordsB.length) return false;
 	let overlap = 0;
-	for (const w of wordsA) if (wordsB.has(w)) overlap++;
-	return overlap >= Math.min(wordsA.size, wordsB.size) * 0.5;
-}
-
-// Extrait "TeamA - TeamB" ou "TeamA vs TeamB" d'un nom d'événement, en
-// retirant emoji/drapeaux éventuellement présents devant.
-function splitTeams(eventName) {
-	const cleaned = (eventName || '').replace(/^[^\p{L}\p{N}]+/u, '').trim();
-	const parts = cleaned.split(/\s+(?:-|vs\.?)\s+/i);
-	if (parts.length !== 2) return null;
-	return [parts[0].trim(), parts[1].trim().replace(/\s*[\u{1F1E6}-\u{1F1FF}]+\s*$/gu, '').trim()];
-}
-
-// Classe le type de pari à partir du texte français libre -- forcément
-// approximatif, ne couvre que les paris simples (pas BTTS, pas les spéciaux).
-function classifyBetType(description) {
-	const d = stripDiacritics(description || '').toLowerCase();
-	let m = d.match(/plus de (\d+(?:[.,]\d+)?)\s*buts?/);
-	if (m) return { type: 'total', side: 'over', points: parseFloat(m[1].replace(',', '.')) };
-	m = d.match(/moins de (\d+(?:[.,]\d+)?)\s*buts?/);
-	if (m) return { type: 'total', side: 'under', points: parseFloat(m[1].replace(',', '.')) };
-	if (/resultat du match|resultat final|1x2|double chance/.test(d)) return { type: 'moneyline' };
-	return null;
+	for (const w of wordsA) if (wordsB.some((x) => wordsFuzzyMatch(w, x))) overlap++;
+	return overlap >= Math.min(wordsA.length, wordsB.length) * 0.5;
 }
 
 function americanToDecimal(american) {
@@ -220,69 +229,257 @@ async function fetchLeagueData(leagueId) {
 	return { matchups, markets };
 }
 
-// Cherche une cote Pinnacle correspondant au pari boosté (mêmes équipes, même
-// type de pari simple). Retourne {decimalOdds, americanOdds, matchupId} ou null.
-async function findPinnacleReference(eventName, description) {
-	const teams = splitTeams(eventName);
-	const betType = classifyBetType(description);
-	if (!teams || !betType) return null;
-	const [teamA, teamB] = teams;
-
+// Récupère toutes les grandes ligues en parallèle, avec un court cache mémoire
+// (utile si plusieurs paris consécutifs se résolvent pendant le même check).
+async function fetchAllLeagues() {
+	if (leagueCache && Date.now() - leagueCacheAt < CACHE_TTL_MS) return leagueCache;
 	const results = await Promise.all(
 		PINNACLE_LEAGUES.map(async (league) => {
 			try {
 				const data = await fetchLeagueData(league.id);
-				return data ? { league, data } : null;
+				return data ? { league, ...data } : null;
 			} catch {
 				return null;
 			}
 		})
 	);
+	leagueCache = results.filter(Boolean);
+	leagueCacheAt = Date.now();
+	return leagueCache;
+}
 
-	for (const entry of results) {
-		if (!entry) continue;
-		const { league, data } = entry;
-		const matchup = data.matchups.find(
-			(m) =>
-				m.participants?.length >= 2 &&
-				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
-					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
-		);
-		if (!matchup) continue;
+function priceForParticipant(markets, matchupId, participantId) {
+	for (const mk of markets) {
+		if (mk.matchupId !== matchupId) continue;
+		const p = (mk.prices || []).find((pr) => pr.participantId === participantId);
+		if (p) return p.price;
+	}
+	return null;
+}
 
-		if (betType.type === 'moneyline') {
-			const market = data.markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'moneyline' && mk.period === 0);
-			if (!market) return null;
-			return { league: league.name, market, betType };
-		}
-		if (betType.type === 'total') {
-			const market = data.markets.find(
-				(mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0 && mk.prices?.[0]?.points === betType.points
+// Marché "Équipe & Over/Under X.Y" -- pari combiné publié directement par
+// Pinnacle, donc probabilité exacte (pas de corrélation à approximer).
+function findCombinedWinTotal(leagues, teamName, side, points) {
+	const label = `${side === 'over' ? 'Over' : 'Under'} ${points}`;
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			const part = (m.participants || []).find(
+				(p) => p.name?.includes(' & ') && p.name.endsWith(label) && teamsMatch(p.name.split(' & ')[0], teamName)
 			);
-			if (!market) return null;
-			return { league: league.name, market, betType };
+			if (!part) continue;
+			const price = priceForParticipant(markets, m.id, part.id);
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
 		}
 	}
 	return null;
 }
 
+// Marché "Équipe By N" / "Équipe By N+" (marge de victoire) -- somme les
+// probabilités de toutes les marges >= au seuil demandé. Exact (pas d'approximation).
+function findWinningMargin(leagues, teamName, minMargin) {
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			const teamParts = (m.participants || [])
+				.filter((p) => / By \d+\+?$/.test(p.name || '') && teamsMatch(p.name.split(' By ')[0], teamName))
+				.map((p) => {
+					const suffix = p.name.split(' By ')[1];
+					return { id: p.id, n: parseInt(suffix, 10) };
+				})
+				.filter((p) => !isNaN(p.n));
+			const qualifying = teamParts.filter((p) => p.n >= minMargin);
+			if (!qualifying.length) continue;
+
+			let probSum = 0;
+			for (const q of qualifying) {
+				const price = priceForParticipant(markets, m.id, q.id);
+				if (price == null) return null;
+				probSum += 1 / americanToDecimal(price);
+			}
+			if (!probSum) continue;
+			return { league: league.name, decimal: 1 / probSum, exact: true };
+		}
+	}
+	return null;
+}
+
+function findMoneyline(leagues, teamA, teamB) {
+	for (const { league, matchups, markets } of leagues) {
+		const matchup = matchups.find(
+			(m) =>
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!matchup) continue;
+		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'moneyline' && mk.period === 0);
+		if (!market) continue;
+		return { league: league.name, market };
+	}
+	return null;
+}
+
+function findTotal(leagues, teamA, teamB, side, points) {
+	for (const { league, matchups, markets } of leagues) {
+		const matchup = matchups.find(
+			(m) =>
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!matchup) continue;
+		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0 && mk.prices?.[0]?.points === points);
+		if (!market) continue;
+		const p = market.prices.find((pr) => pr.designation === side);
+		if (!p) continue;
+		return { league: league.name, decimal: americanToDecimal(p.price), exact: true };
+	}
+	return null;
+}
+
+// --- Analyse du texte français libre des cotes boostées ---
+
+// Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
+// marge / total buts). Le texte peut décrire une seule leg (pari simple ou
+// combiné même-match) ou plusieurs legs sur des matchs différents (combo multi-matchs).
+function parseLegs(eventName, description) {
+	const d = stripDiacritics(description || '');
+
+	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
+	// gagnent chacun de N buts ou plus" -- la condition de marge est partagée.
+	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*buts?\s+ou\s+plus/i);
+	if (marginAll) {
+		const margin = parseInt(marginAll[1], 10);
+		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
+		const legs = [];
+		let m;
+		while ((m = teamPattern.exec(d)) !== null) {
+			legs.push({ type: 'margin', team: m[1].trim(), margin });
+		}
+		if (legs.length >= 2) return legs;
+	}
+
+	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts"
+	const teams = splitTeams(eventName);
+	if (!teams) return null;
+	const [teamA, teamB] = teams;
+
+	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
+
+	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*buts?/i);
+	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*buts?\s+ou\s+plus/i);
+
+	if (winningTeam && totalMatch) {
+		return [
+			{
+				type: 'winAndTotal',
+				team: winningTeam,
+				opponent: winningTeam === teamA ? teamB : teamA,
+				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
+				points: parseFloat(totalMatch[2].replace(',', '.')),
+			},
+		];
+	}
+	if (winningTeam && marginMatch) {
+		return [{ type: 'margin', team: winningTeam, opponent: winningTeam === teamA ? teamB : teamA, margin: parseInt(marginMatch[1], 10) }];
+	}
+	if (totalMatch && !winningTeam) {
+		return [
+			{
+				type: 'total',
+				teamA,
+				teamB,
+				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
+				points: parseFloat(totalMatch[2].replace(',', '.')),
+			},
+		];
+	}
+	if (/resultat du match|resultat final|1x2/i.test(d) && !winningTeam) {
+		return [{ type: 'moneyline', teamA, teamB }];
+	}
+	return null;
+}
+
+function extractWinner(d) {
+	const m = d.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+gagne\b/i);
+	return m ? m[1].trim() : '';
+}
+
+function splitTeams(eventName) {
+	const cleaned = (eventName || '').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+	const parts = cleaned.split(/\s+(?:-|vs\.?)\s+/i);
+	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+	return [parts[0].trim(), parts[1].trim().replace(/\s*[\u{1F1E6}-\u{1F1FF}]+\s*$/gu, '').trim()];
+}
+
+async function resolveLeg(leagues, leg) {
+	if (leg.type === 'winAndTotal') {
+		const direct = findCombinedWinTotal(leagues, leg.team, leg.side, leg.points);
+		if (direct) return direct;
+		return null; // pas d'approximation : silencieux si le marché combiné direct n'existe pas
+	}
+	if (leg.type === 'margin') {
+		return findWinningMargin(leagues, leg.team, leg.margin);
+	}
+	if (leg.type === 'total') {
+		return findTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points);
+	}
+	if (leg.type === 'moneyline') {
+		const found = findMoneyline(leagues, leg.teamA, leg.teamB);
+		if (!found) return null;
+		const home = found.market.prices.find((p) => p.designation === 'home');
+		const away = found.market.prices.find((p) => p.designation === 'away');
+		const draw = found.market.prices.find((p) => p.designation === 'draw');
+		return { league: found.league, moneyline: { home, away, draw } };
+	}
+	return null;
+}
+
+async function findPinnacleReference(eventName, description) {
+	const legs = parseLegs(eventName, description);
+	if (!legs || !legs.length) return null;
+
+	const leagues = await fetchAllLeagues();
+	const resolved = [];
+	for (const leg of legs) {
+		const r = await resolveLeg(leagues, leg);
+		if (!r) return null; // une seule leg non résolue => on n'affiche rien (pas de résultat partiel trompeur)
+		resolved.push(r);
+	}
+
+	if (resolved.length === 1 && resolved[0].moneyline) {
+		return { type: 'moneyline', league: resolved[0].league, moneyline: resolved[0].moneyline };
+	}
+	if (resolved.length === 1) {
+		return { type: 'single', league: resolved[0].league, decimal: resolved[0].decimal, exact: resolved[0].exact };
+	}
+	// combo multi-matchs : legs indépendantes (matchs différents) -> multiplication exacte
+	let probProduct = 1;
+	for (const r of resolved) probProduct *= 1 / r.decimal;
+	return {
+		type: 'combo',
+		legues: [...new Set(resolved.map((r) => r.league))],
+		decimal: 1 / probProduct,
+		exact: true, // matchs différents = événements indépendants, pas d'approximation
+		legCount: resolved.length,
+	};
+}
+
 function formatPinnacleReference(ref) {
 	if (!ref) return null;
-	const { market, betType, league } = ref;
-	if (betType.type === 'moneyline') {
-		const home = market.prices.find((p) => p.designation === 'home');
-		const away = market.prices.find((p) => p.designation === 'away');
-		const draw = market.prices.find((p) => p.designation === 'draw');
+	if (ref.type === 'moneyline') {
+		const { home, away, draw } = ref.moneyline;
 		const parts = [];
 		if (home) parts.push(`1: ${americanToDecimal(home.price).toFixed(2)}`);
 		if (draw) parts.push(`N: ${americanToDecimal(draw.price).toFixed(2)}`);
 		if (away) parts.push(`2: ${americanToDecimal(away.price).toFixed(2)}`);
-		return `📊 Pinnacle (${league}) : ${parts.join(' · ')}`;
+		return `📊 Pinnacle (${ref.league}) : ${parts.join(' · ')}`;
 	}
-	if (betType.type === 'total') {
-		const side = market.prices.find((p) => p.designation === betType.side);
-		if (!side) return null;
-		return `📊 Pinnacle (${league}) : ${betType.side === 'over' ? 'Plus' : 'Moins'} de ${betType.points} → ${americanToDecimal(side.price).toFixed(2)}`;
+	if (ref.type === 'single') {
+		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}`;
+	}
+	if (ref.type === 'combo') {
+		return `📊 Pinnacle (combo ${ref.legCount} matchs, ${ref.legues.join(' + ')}) : ${ref.decimal.toFixed(2)}`;
 	}
 	return null;
 }
