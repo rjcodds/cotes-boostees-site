@@ -265,6 +265,29 @@ async function sendToChat(env, chatId, text) {
 		const body = await res.text();
 		throw new Error(`Telegram sendMessage failed: ${res.status} ${body}`);
 	}
+	const body = await res.json();
+	return body.result; // { message_id, ... } -- utilisé pour éditer le message plus tard
+}
+
+async function editMessageText(env, chatId, messageId, text) {
+	const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, disable_web_page_preview: true }),
+	});
+	if (res.status === 429) {
+		const body = await res.json().catch(() => ({}));
+		const wait = (body?.parameters?.retry_after || 2) * 1000;
+		await new Promise((r) => setTimeout(r, wait));
+		return editMessageText(env, chatId, messageId, text);
+	}
+	if (!res.ok) {
+		const body = await res.text();
+		// "message is not modified" arrive si Telegram voit le texte comme
+		// identique -- pas une vraie erreur, on l'ignore silencieusement.
+		if (/message is not modified/i.test(body)) return;
+		throw new Error(`Telegram editMessageText failed: ${res.status} ${body}`);
+	}
 }
 
 async function sendTelegramMessage(env, text) {
@@ -905,8 +928,7 @@ function diffBoosts(prevBoosts, currentBoosts) {
 	return events;
 }
 
-async function formatMonitoringMessage(event) {
-	const { type, boost, prevOdds } = event;
+function buildMonitoringBodyLines(type, boost, prevOdds) {
 	const icon = type === 'add' ? '➕' : type === 'remove' ? '➖' : '🔄';
 	const label = type === 'add' ? 'Nouvelle cote' : type === 'remove' ? 'Cote retirée' : 'Cote modifiée';
 	const lines = [`${icon} ${label} — UNIBET`, ``, boost.eventName, boost.description];
@@ -917,28 +939,92 @@ async function formatMonitoringMessage(event) {
 	}
 	lines.push(`Mise max : ${boost.maxStake}€`);
 	if (boost.kickoff) lines.push(`Disponible jusqu'à ${boost.kickoff}`);
+	return lines;
+}
+
+// Reconstruit le texte complet d'un message "Nouvelle cote" avec une ligne
+// Pinnacle à jour -- utilisé à la fois au premier envoi et lors d'une
+// réédition (voir refreshTrackedPinnacleRefs).
+function rebuildAddMessageText(boost, refLine) {
+	const lines = buildMonitoringBodyLines('add', boost);
+	if (refLine) lines.push(``, refLine);
+	return lines.join('\n');
+}
+
+async function formatMonitoringMessage(event) {
+	const { type, boost, prevOdds } = event;
+	const lines = buildMonitoringBodyLines(type, boost, prevOdds);
 
 	// Référence Pinnacle : uniquement pour les nouvelles cotes, uniquement si un
 	// pari équivalent (victoire simple / total buts) existe sur une grande ligue.
+	let refLine = null;
 	if (type === 'add') {
 		try {
 			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
-			const refLine = formatPinnacleReference(ref);
+			refLine = formatPinnacleReference(ref);
 			if (refLine) lines.push(``, refLine);
 		} catch {
 			// silencieux : pas de reference dispo ne doit jamais bloquer l'alerte
 		}
 	}
 
-	return lines.join('\n');
+	return { text: lines.join('\n'), refLine };
 }
+
+const PIN_TRACK_TTL_SECONDS = SEEN_TTL_SECONDS; // même durée de vie qu'un boost "vu"
 
 async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 	if (!env.MONITORING_CHAT_ID || !prevBoosts) return;
 	const events = diffBoosts(prevBoosts, currentBoosts);
 	for (const event of events) {
-		await sendToChat(env, env.MONITORING_CHAT_ID, await formatMonitoringMessage(event));
+		const { text, refLine } = await formatMonitoringMessage(event);
+		const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
+
+		if (event.type === 'add' && refLine && sent?.message_id) {
+			// On garde de quoi revérifier et éditer ce message si la cote Pinnacle
+			// bouge avant le début du match (voir refreshTrackedPinnacleRefs).
+			await env.SEEN_BOOSTS.put(
+				`pintrack:${event.boost.marketId}`,
+				JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sent.message_id, boost: event.boost, lastRefLine: refLine }),
+				{ expirationTtl: PIN_TRACK_TTL_SECONDS }
+			);
+		}
+		if (event.type === 'remove') {
+			// Le match est passé/le boost a disparu -- plus la peine de le revérifier.
+			await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
+		}
+
 		await new Promise((r) => setTimeout(r, 350)); // évite le flood control Telegram
+	}
+}
+
+// Revérifie périodiquement les cotes Pinnacle déjà affichées et édite le
+// message Telegram d'origine si la cote a bougé -- Pinnacle réajuste ses prix
+// en continu jusqu'au coup d'envoi, contrairement au boost Unibet/Winamax lui-
+// même qui reste fixe une fois publié.
+async function refreshTrackedPinnacleRefs(env) {
+	if (!env.MONITORING_CHAT_ID) return;
+	const list = await env.SEEN_BOOSTS.list({ prefix: 'pintrack:' });
+	for (const key of list.keys) {
+		const raw = await env.SEEN_BOOSTS.get(key.name);
+		if (!raw) continue;
+		const tracked = JSON.parse(raw);
+		try {
+			const ref = await findPinnacleReference(
+				tracked.boost.eventName,
+				tracked.boost.description,
+				tracked.boost.league,
+				tracked.boost.sport
+			);
+			const newRefLine = formatPinnacleReference(ref);
+			if (!newRefLine || newRefLine === tracked.lastRefLine) continue;
+
+			await editMessageText(env, tracked.chatId, tracked.messageId, rebuildAddMessageText(tracked.boost, newRefLine));
+			tracked.lastRefLine = newRefLine;
+			await env.SEEN_BOOSTS.put(key.name, JSON.stringify(tracked), { expirationTtl: PIN_TRACK_TTL_SECONDS });
+		} catch (e) {
+			console.log('refreshTrackedPinnacleRefs failed for', key.name, ':', String(e));
+		}
 	}
 }
 
@@ -969,6 +1055,7 @@ async function checkAndPost(env) {
 		{ expirationTtl: 15 * 60 }
 	);
 	await postMonitoringDiff(env, prevBoosts, boosts);
+	await refreshTrackedPinnacleRefs(env);
 
 	let posted = 0;
 	for (const boost of eligible) {
