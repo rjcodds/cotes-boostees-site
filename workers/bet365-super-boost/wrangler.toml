@@ -3,8 +3,11 @@ main = "index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Canary quotidien -- tant que le blocage Cloudflare-vs-Cloudflare (réputation
+# IP, voir README) n'est pas levé, ça ne sert à rien de vérifier plus souvent :
+# le worker prévient automatiquement dès que ça débloque (voir index.js).
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["17 6 * * *"]
 
 [browser]
 binding = "BROWSER"

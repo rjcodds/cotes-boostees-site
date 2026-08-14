@@ -1,6 +1,9 @@
-# Bet365 Super Boost → Telegram (NON DÉPLOYÉ — bloqué)
+# Bet365 Super Boost → Telegram (canary quotidien — bloqué)
 
-**Statut : bloqué au niveau réseau, non fonctionnel en l'état.**
+**Statut : bloqué au niveau réseau. Déployé uniquement comme "canary" : un
+cron 1x/jour (voir `wrangler.toml`) vérifie si le blocage est levé et prévient
+sur le canal privé de monitoring si c'est le cas. Pas de posting automatique
+en continu tant que ça reste bloqué.**
 
 ## Ce qui a été fait
 

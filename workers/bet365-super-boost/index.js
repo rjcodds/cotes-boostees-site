@@ -154,6 +154,23 @@ async function checkAndPost(env) {
 		await browser.close();
 	}
 
+	// Canary : ce worker tourne 1x/jour uniquement pour surveiller si Bet365
+	// débloque un jour l'IP de Cloudflare Browser Rendering (voir README --
+	// blocage réputation IP, pas un bug de code). On prévient dès que la page
+	// charge du vrai contenu (pas la page de challenge Cloudflare), avec un
+	// dédoublonnage de 7 jours pour ne pas spammer si ça reste débloqué.
+	const stillBlocked = debugInfo.isChallenge || debugInfo.bodyTextLength < 1000;
+	if (!stillBlocked) {
+		const alreadyNotified = await env.SEEN_BOOSTS.get('canary:unblocked');
+		if (!alreadyNotified) {
+			await sendTelegramMessage(
+				env,
+				`🎉 Bet365 n'est plus bloqué par Cloudflare (canary quotidien) !\n\n${boosts.length} carte(s) de cote détectée(s) sur la page. Il faut relancer le worker en continu (cron */10) et vérifier le parser avant de compter dessus.`
+			);
+			await env.SEEN_BOOSTS.put('canary:unblocked', '1', { expirationTtl: 7 * 24 * 60 * 60 });
+		}
+	}
+
 	const superBoosts = boosts.filter((b) => b.isSuperBoost);
 	let posted = 0;
 	for (const boost of superBoosts) {
@@ -165,7 +182,7 @@ async function checkAndPost(env) {
 		await env.SEEN_BOOSTS.put(key, '1', { expirationTtl: SEEN_TTL_SECONDS });
 		posted++;
 	}
-	return { totalBoostsOnPage: boosts.length, superBoostsFound: superBoosts.length, posted, debugInfo };
+	return { totalBoostsOnPage: boosts.length, superBoostsFound: superBoosts.length, posted, stillBlocked, debugInfo };
 }
 
 export default {

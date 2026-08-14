@@ -692,18 +692,39 @@ async function resolveLegsAgainstLeague(legs, league) {
 	return resolved;
 }
 
+// Dernier recours quand le nom de la compétition ne matche rien (ou que les
+// candidats par nom ne résolvent pas les legs) : scanne le reste des
+// compétitions du sport par lots plutôt que d'abandonner silencieusement. Le
+// plan payant lève la limite de sous-requêtes/requête qui rendait ça risqué
+// sur le plan gratuit -- concurrence bornée par lot pour ne pas non plus
+// spammer l'API guest de Pinnacle.
+async function scanAllLeaguesForLegs(legs, leagueList, skipIds) {
+	const BATCH_SIZE = 20;
+	const remaining = leagueList.filter((l) => !skipIds.has(l.id));
+	for (let i = 0; i < remaining.length; i += BATCH_SIZE) {
+		const batch = remaining.slice(i, i + BATCH_SIZE);
+		const results = await Promise.all(batch.map((league) => resolveLegsAgainstLeague(legs, league)));
+		const hit = results.find(Boolean);
+		if (hit) return hit;
+	}
+	return null;
+}
+
 async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
 	const legs = parseLegs(eventName, description, sportKey);
 	if (!legs || !legs.length) return null;
 
 	const leagueList = await fetchLeagueList(sportKey);
 	const candidates = matchLeaguesByLabel(leagueList, leagueLabel, leagueCountryHint(leagueLabel));
-	if (!candidates.length) return null; // compétition introuvable chez Pinnacle -- silencieux
 
 	let resolved = null;
 	for (const candidate of candidates) {
 		resolved = await resolveLegsAgainstLeague(legs, candidate);
 		if (resolved) break;
+	}
+	if (!resolved && leagueList.length) {
+		const tried = new Set(candidates.map((c) => c.id));
+		resolved = await scanAllLeaguesForLegs(legs, leagueList, tried);
 	}
 	if (!resolved) return null;
 

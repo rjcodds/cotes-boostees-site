@@ -3,12 +3,13 @@ main = "index.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Vérifie toutes les 15 minutes : à 10 min, 144 checks/jour dépassaient déjà
-# le budget gratuit (10 min/jour) même sans compter d'autres tests. À 15 min,
-# 96 checks/jour * ~6s reste sous les 600s/jour, avec marge. La fenêtre "Grosse
-# Cote Boostée" dure 30-35 min chez Winamax donc ça laisse 2+ chances de la voir.
+# Compte passé sur le plan Workers Paid (5$/mois, 10h de navigateur incluses) :
+# à */5 min, 288 checks/jour * ~6-10s ≈ 14-24h/mois, soit 0,36-1,26$ de
+# dépassement au-delà des 10h incluses -- reste très largement dans le budget.
+# La fenêtre "Grosse Cote Boostée" dure 30-35 min chez Winamax, donc ça laisse
+# 6+ chances de la voir.
 [triggers]
-crons = ["*/15 * * * *"]
+crons = ["*/5 * * * *"]
 
 [browser]
 binding = "BROWSER"

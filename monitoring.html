@@ -73,7 +73,7 @@ const SOURCES = {
   unibet: 'https://unibet-flash-boost.jc-hd-affiliation.workers.dev/current',
   winamax: 'https://winamax-flash-boost.jc-hd-affiliation.workers.dev/current',
 };
-const POLL_MS = 30000;
+const POLL_MS = 12000; // plan payant = pas de plafond quotidien de requêtes, on peut poller plus vite
 const FEED_STORAGE_KEY = 'boost-monitoring-feed';
 const previousState = { unibet: new Map(), winamax: new Map() };
 const previousByMarket = { unibet: new Map(), winamax: new Map() };
