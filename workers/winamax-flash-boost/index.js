@@ -707,10 +707,22 @@ async function formatMonitoringMessage(event) {
 }
 
 async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
-	if (!env.MONITORING_CHAT_ID || !prevBoosts) return;
+	if (!env.MONITORING_CHAT_ID) {
+		console.log('postMonitoringDiff: MONITORING_CHAT_ID not set, skipping');
+		return;
+	}
+	if (!prevBoosts) {
+		console.log('postMonitoringDiff: no prevBoosts (first run since snapshot expired), skipping diff');
+		return;
+	}
 	const events = diffBoosts(prevBoosts, currentBoosts);
+	console.log(`postMonitoringDiff: prev=${prevBoosts.length} current=${currentBoosts.length} events=${events.length}`);
 	for (const event of events) {
-		await sendToChat(env, env.MONITORING_CHAT_ID, await formatMonitoringMessage(event));
+		try {
+			await sendToChat(env, env.MONITORING_CHAT_ID, await formatMonitoringMessage(event));
+		} catch (e) {
+			console.log('postMonitoringDiff: sendToChat failed:', String(e));
+		}
 		await new Promise((r) => setTimeout(r, 350)); // évite le flood control Telegram
 	}
 }
@@ -724,9 +736,11 @@ async function fetchPreloadedState(env) {
 		);
 		// domcontentloaded + polling ensuite (au lieu de networkidle2) : plus rapide
 		// et plus robuste si Cloudflare Browser Rendering est ralenti/soft-bloqué par
-		// Winamax -- on ne veut pas brûler tout le timeout à chaque check et épuiser
-		// le quota gratuit (10 min/jour) en quelques heures.
-		await page.goto(WINAMAX_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
+		// Winamax. 15s (au lieu de 10s) : sur le plan payant le coût d'un check plus
+		// long est négligeable, alors qu'un timeout trop serré faisait échouer des
+		// checks entiers (et donc rater des diffs de monitoring) quand Cloudflare
+		// mettait un peu plus de temps que la moyenne à charger la page.
+		await page.goto(WINAMAX_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
 		// Sonde au lieu d'attendre systématiquement 4s : dès que Socket.IO a poussé
 		// des cotes dans PRELOADED_STATE (ou après 4s max), on continue -- économise
 		// du temps de navigateur (quota gratuit limité) sans perdre en fiabilité.
