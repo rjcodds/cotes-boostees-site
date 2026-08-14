@@ -283,8 +283,13 @@ const PINNACLE_LEAGUES = [
 	{ id: 2678, name: 'Wales - Premier League' },
 ];
 
-let leagueCache = null;
-let leagueCacheAt = 0;
+const PINNACLE_LEAGUES_BASKETBALL = [
+	{ id: 487, name: 'NBA' },
+	{ id: 578, name: 'WNBA' },
+];
+
+let leagueCache = { football: null, basketball: null };
+let leagueCacheAt = { football: 0, basketball: 0 };
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 function stripDiacritics(s) {
@@ -356,12 +361,13 @@ async function fetchLeagueData(leagueId) {
 	return { matchups, markets };
 }
 
-// Récupère toutes les grandes ligues en parallèle, avec un court cache mémoire
-// (utile si plusieurs paris consécutifs se résolvent pendant le même check).
-async function fetchAllLeagues() {
-	if (leagueCache && Date.now() - leagueCacheAt < CACHE_TTL_MS) return leagueCache;
+// Récupère toutes les grandes ligues d'un sport en parallèle, avec un court
+// cache mémoire (utile si plusieurs paris consécutifs se résolvent pendant le même check).
+async function fetchAllLeagues(sport = 'football') {
+	if (leagueCache[sport] && Date.now() - leagueCacheAt[sport] < CACHE_TTL_MS) return leagueCache[sport];
+	const list = sport === 'basketball' ? PINNACLE_LEAGUES_BASKETBALL : PINNACLE_LEAGUES;
 	const results = await Promise.all(
-		PINNACLE_LEAGUES.map(async (league) => {
+		list.map(async (league) => {
 			try {
 				const data = await fetchLeagueData(league.id);
 				return data ? { league, ...data } : null;
@@ -370,9 +376,9 @@ async function fetchAllLeagues() {
 			}
 		})
 	);
-	leagueCache = results.filter(Boolean);
-	leagueCacheAt = Date.now();
-	return leagueCache;
+	leagueCache[sport] = results.filter(Boolean);
+	leagueCacheAt[sport] = Date.now();
+	return leagueCache[sport];
 }
 
 function priceForParticipant(markets, matchupId, participantId) {
@@ -466,35 +472,43 @@ function findTotal(leagues, teamA, teamB, side, points) {
 
 // --- Analyse du texte français libre des cotes boostées ---
 
+// Detecte le sport a partir de l'unite mentionnee dans le texte -- "buts" =
+// football, "points" = basketball. Determine quelles ligues Pinnacle chercher.
+function detectSport(unit) {
+	return /points?/i.test(unit) ? 'basketball' : 'football';
+}
+
 // Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
-// marge / total buts). Le texte peut décrire une seule leg (pari simple ou
-// combiné même-match) ou plusieurs legs sur des matchs différents (combo multi-matchs).
+// marge / total buts-ou-points). Le texte peut décrire une seule leg (pari
+// simple ou combiné même-match) ou plusieurs legs sur des matchs différents
+// (combo multi-matchs). Chaque leg porte son "sport" (football ou basketball).
 function parseLegs(eventName, description) {
 	const d = stripDiacritics(description || '');
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
-	// gagnent chacun de N buts ou plus" -- la condition de marge est partagée.
-	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*buts?\s+ou\s+plus/i);
+	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.
+	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(buts?|points?)\s+ou\s+plus/i);
 	if (marginAll) {
 		const margin = parseInt(marginAll[1], 10);
+		const sport = detectSport(marginAll[2]);
 		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
 		const legs = [];
 		let m;
 		while ((m = teamPattern.exec(d)) !== null) {
-			legs.push({ type: 'margin', team: m[1].trim(), margin });
+			legs.push({ type: 'margin', team: m[1].trim(), margin, sport });
 		}
 		if (legs.length >= 2) return legs;
 	}
 
-	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts"
+	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts/points"
 	const teams = splitTeams(eventName);
 	if (!teams) return null;
 	const [teamA, teamB] = teams;
 
 	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
 
-	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*buts?/i);
-	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*buts?\s+ou\s+plus/i);
+	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(buts?|points?)/i);
+	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(buts?|points?)\s+ou\s+plus/i);
 
 	if (winningTeam && totalMatch) {
 		return [
@@ -504,11 +518,20 @@ function parseLegs(eventName, description) {
 				opponent: winningTeam === teamA ? teamB : teamA,
 				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
 				points: parseFloat(totalMatch[2].replace(',', '.')),
+				sport: detectSport(totalMatch[3]),
 			},
 		];
 	}
 	if (winningTeam && marginMatch) {
-		return [{ type: 'margin', team: winningTeam, opponent: winningTeam === teamA ? teamB : teamA, margin: parseInt(marginMatch[1], 10) }];
+		return [
+			{
+				type: 'margin',
+				team: winningTeam,
+				opponent: winningTeam === teamA ? teamB : teamA,
+				margin: parseInt(marginMatch[1], 10),
+				sport: detectSport(marginMatch[2]),
+			},
+		];
 	}
 	if (totalMatch && !winningTeam) {
 		return [
@@ -518,13 +541,25 @@ function parseLegs(eventName, description) {
 				teamB,
 				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
 				points: parseFloat(totalMatch[2].replace(',', '.')),
+				sport: detectSport(totalMatch[3]),
 			},
 		];
 	}
 	if (/resultat du match|resultat final|1x2/i.test(d) && !winningTeam) {
-		return [{ type: 'moneyline', teamA, teamB }];
+		return [{ type: 'moneyline', teamA, teamB, sport: sportFromEventName(eventName) }];
+	}
+	if (winningTeam) {
+		// "TeamX gagne le match" seul, sans total ni marge associee.
+		return [{ type: 'moneyline', teamA, teamB, sport: sportFromEventName(eventName) }];
 	}
 	return null;
+}
+
+// Fallback quand la description ne contient aucune unite ("buts"/"points") --
+// ex: "TeamX gagne le match" seul. Le sport est alors déduit de l'emoji en
+// tête de eventName (posé par formatEventName / SPORT_EMOJI).
+function sportFromEventName(eventName) {
+	return (eventName || '').trim().startsWith('🏀') ? 'basketball' : 'football';
 }
 
 function extractWinner(d) {
@@ -539,7 +574,8 @@ function splitTeams(eventName) {
 	return [parts[0].trim(), parts[1].trim().replace(/\s*[\u{1F1E6}-\u{1F1FF}]+\s*$/gu, '').trim()];
 }
 
-async function resolveLeg(leagues, leg) {
+async function resolveLeg(leg) {
+	const leagues = await fetchAllLeagues(leg.sport || 'football');
 	if (leg.type === 'winAndTotal') {
 		const direct = findCombinedWinTotal(leagues, leg.team, leg.side, leg.points);
 		if (direct) return direct;
@@ -566,10 +602,9 @@ async function findPinnacleReference(eventName, description) {
 	const legs = parseLegs(eventName, description);
 	if (!legs || !legs.length) return null;
 
-	const leagues = await fetchAllLeagues();
 	const resolved = [];
 	for (const leg of legs) {
-		const r = await resolveLeg(leagues, leg);
+		const r = await resolveLeg(leg);
 		if (!r) return null; // une seule leg non résolue => on n'affiche rien (pas de résultat partiel trompeur)
 		resolved.push(r);
 	}
