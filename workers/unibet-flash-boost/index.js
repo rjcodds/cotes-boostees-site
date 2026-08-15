@@ -774,7 +774,11 @@ function parseLegs(eventName, description, sportKey) {
 	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
 
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
-	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i);
+	// Deux formulations existent pour la marge de victoire : "gagne par/de N
+	// buts ou plus" et "gagne par au moins N buts d'écart".
+	const marginMatch =
+		d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i) ||
+		d.match(/gagne\s+par\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?)(?:\s+d.ecart)?/i);
 	const correctScoreMatch =
 		winningTeam &&
 		d.match(/gagne\s+le\s+match\s+((?:\d+\s*-\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*-\s*\d+)\.?\s*$/i);

@@ -700,7 +700,11 @@ function parseLegs(eventName, description, sportKey) {
 	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
 
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
-	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i);
+	// Deux formulations existent pour la marge de victoire : "gagne par/de N
+	// buts ou plus" et "gagne par au moins N buts d'écart".
+	const marginMatch =
+		d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i) ||
+		d.match(/gagne\s+par\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?)(?:\s+d.ecart)?/i);
 	const correctScoreMatch =
 		winningTeam &&
 		d.match(/gagne\s+le\s+match\s+((?:\d+\s*-\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*-\s*\d+)\.?\s*$/i);
@@ -1211,6 +1215,52 @@ async function detectDuplicates(env, myBoosts) {
 	}
 }
 
+// Rattrapage ponctuel (déclenché à la main via /backfill-pinnacle quand
+// besoin -- pas un cron permanent) : applique la logique Pinnacle actuelle
+// aux cotes déjà actives, édite le message existant si déjà suivi.
+async function backfillPinnacleRefs(env) {
+	if (!env.MONITORING_CHAT_ID) return { checked: 0, updated: 0, sent: 0 };
+	const raw = await env.SEEN_BOOSTS.get('current_snapshot');
+	const boosts = raw ? JSON.parse(raw).boosts : [];
+	let updated = 0;
+	let sent = 0;
+	for (const boost of boosts) {
+		const trackKey = `pintrack:${boost.marketId}`;
+		try {
+			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
+			const refLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
+			if (!refLine) continue;
+
+			const existingRaw = await env.SEEN_BOOSTS.get(trackKey);
+			if (existingRaw) {
+				const tracked = JSON.parse(existingRaw);
+				if (refLine !== tracked.lastRefLine) {
+					await editMessageText(env, tracked.chatId, tracked.messageId, rebuildAddMessageText(boost, refLine));
+					tracked.lastRefLine = refLine;
+					tracked.boost = boost;
+					await env.SEEN_BOOSTS.put(trackKey, JSON.stringify(tracked), { expirationTtl: PIN_TRACK_TTL_SECONDS });
+					updated++;
+				}
+			} else {
+				const text = `📊 Référence Pinnacle (rattrapage) — ${boost.sportEmoji} ${boost.eventName}\n${boost.description}\n\n${refLine}`;
+				const sentMsg = await sendToChat(env, env.MONITORING_CHAT_ID, text);
+				if (sentMsg?.message_id) {
+					await env.SEEN_BOOSTS.put(
+						trackKey,
+						JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sentMsg.message_id, boost, lastRefLine: refLine }),
+						{ expirationTtl: PIN_TRACK_TTL_SECONDS }
+					);
+				}
+				sent++;
+			}
+		} catch (e) {
+			console.log('backfillPinnacleRefs failed for', boost.marketId, ':', String(e));
+		}
+		await new Promise((r) => setTimeout(r, 350));
+	}
+	return { checked: boosts.length, updated, sent };
+}
+
 async function checkAndPost(env) {
 	const state = await fetchPreloadedState(env);
 	const boosts = parseBoosts(state);
@@ -1262,6 +1312,10 @@ export default {
 			return new Response(raw || JSON.stringify({ updatedAt: null, boosts: [] }), {
 				headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
 			});
+		}
+		if (url.pathname === '/backfill-pinnacle') {
+			const result = await backfillPinnacleRefs(env);
+			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
 		}
 		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
