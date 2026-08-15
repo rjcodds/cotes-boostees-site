@@ -285,6 +285,11 @@ function americanToDecimal(american) {
 	return american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
 }
 
+function parseFrenchDecimal(s) {
+	const n = parseFloat((s || '').replace(',', '.'));
+	return isNaN(n) ? null : n;
+}
+
 async function fetchLeagueData(leagueId) {
 	const headers = {
 		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -495,7 +500,7 @@ function findMoneyline(leagues, teamA, teamB) {
 		if (!matchup) continue;
 		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'moneyline' && mk.period === 0);
 		if (!market) continue;
-		return { league: league.name, market };
+		return { league: league.name, market, participants: matchup.participants };
 	}
 	return null;
 }
@@ -533,7 +538,7 @@ function parseLegs(eventName, description, sportKey) {
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
 	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.
-	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(?:buts?|points?)\s+ou\s+plus/i);
+	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i);
 	if (marginAll) {
 		const margin = parseInt(marginAll[1], 10);
 		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
@@ -574,8 +579,8 @@ function parseLegs(eventName, description, sportKey) {
 
 	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
 
-	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?)/i);
-	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?)\s+ou\s+plus/i);
+	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
+	const marginMatch = d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i);
 	const correctScoreMatch =
 		winningTeam &&
 		d.match(/gagne\s+le\s+match\s+((?:\d+\s*-\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*-\s*\d+)\.?\s*$/i);
@@ -638,7 +643,9 @@ function parseLegs(eventName, description, sportKey) {
 	// aucune ligne Pinnacle qu'une mauvaise.
 	const isPlainWin = winningTeam && /^[A-ZÀ-Ý][\w .'-]*?\s+gagne(\s+le\s+match)?\s*[.!]?\s*$/i.test(d.trim());
 	if (isPlainWin || /resultat du match|resultat final|1x2/i.test(d)) {
-		return [{ type: 'moneyline', teamA, teamB, sport: sportKey }];
+		// "team" (côté effectivement backé) n'est connu que dans le cas isPlainWin --
+		// sert à calculer l'edge % contre le bon prix Pinnacle (pas les 3 à la fois).
+		return [{ type: 'moneyline', teamA, teamB, team: isPlainWin ? winningTeam : null, sport: sportKey }];
 	}
 	return null;
 }
@@ -680,7 +687,18 @@ async function resolveLeg(leg, leagueData) {
 		const home = found.market.prices.find((p) => p.designation === 'home');
 		const away = found.market.prices.find((p) => p.designation === 'away');
 		const draw = found.market.prices.find((p) => p.designation === 'draw');
-		return { league: found.league, moneyline: { home, away, draw } };
+		// Détermine quel côté (home/away) correspond à l'équipe effectivement
+		// backée par le boost -- sert à calculer l'edge % contre le bon prix,
+		// pas contre les 3 issues à la fois.
+		let backedDesignation = null;
+		if (leg.team) {
+			const parts = found.participants || [];
+			const homePart = parts.find((p) => p.alignment === 'home') || parts[0];
+			const awayPart = parts.find((p) => p.alignment === 'away') || parts[1];
+			if (teamsMatch(homePart?.name, leg.team)) backedDesignation = 'home';
+			else if (teamsMatch(awayPart?.name, leg.team)) backedDesignation = 'away';
+		}
+		return { league: found.league, moneyline: { home, away, draw }, backedDesignation };
 	}
 	return null;
 }
@@ -737,7 +755,12 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 	if (!resolved) return null;
 
 	if (resolved.length === 1 && resolved[0].moneyline) {
-		return { type: 'moneyline', league: resolved[0].league, moneyline: resolved[0].moneyline };
+		return {
+			type: 'moneyline',
+			league: resolved[0].league,
+			moneyline: resolved[0].moneyline,
+			backedDesignation: resolved[0].backedDesignation,
+		};
 	}
 	if (resolved.length === 1) {
 		return { type: 'single', league: resolved[0].league, decimal: resolved[0].decimal, exact: resolved[0].exact };
@@ -773,7 +796,16 @@ async function findPinnacleReference(eventName, description, leagueLabel, sportK
 	return null;
 }
 
-function formatPinnacleReference(ref) {
+// edge % = combien la cote boostée paie de plus (ou de moins) que le prix
+// Pinnacle jugé "juste" -- positif veut dire meilleure valeur que le marché.
+function edgeSuffix(boostDecimal, pinnacleDecimal) {
+	if (!boostDecimal || !pinnacleDecimal) return '';
+	const edge = (boostDecimal / pinnacleDecimal - 1) * 100;
+	const sign = edge >= 0 ? '+' : '';
+	return ` (${sign}${edge.toFixed(1)}% vs Pinnacle)`;
+}
+
+function formatPinnacleReference(ref, boostDecimal) {
 	if (!ref) return null;
 	if (ref.type === 'moneyline') {
 		const { home, away, draw } = ref.moneyline;
@@ -781,15 +813,18 @@ function formatPinnacleReference(ref) {
 		if (home) parts.push(`1: ${americanToDecimal(home.price).toFixed(2)}`);
 		if (draw) parts.push(`N: ${americanToDecimal(draw.price).toFixed(2)}`);
 		if (away) parts.push(`2: ${americanToDecimal(away.price).toFixed(2)}`);
-		return `📊 Pinnacle (${ref.league}) : ${parts.join(' · ')}`;
+		let line = `📊 Pinnacle (${ref.league}) : ${parts.join(' · ')}`;
+		const backed = ref.backedDesignation === 'home' ? home : ref.backedDesignation === 'away' ? away : null;
+		if (backed) line += edgeSuffix(boostDecimal, americanToDecimal(backed.price));
+		return line;
 	}
 	if (ref.type === 'single') {
-		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}`;
+		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}${edgeSuffix(boostDecimal, ref.decimal)}`;
 	}
 	if (ref.type === 'combo') {
 		const breakdown = ref.legs.map((l) => `${l.label} : ${l.decimal.toFixed(2)}`).join('\n');
 		const product = ref.legs.map((l) => l.decimal.toFixed(2)).join(' × ');
-		return `📊 Pinnacle (combo ${ref.legCount} matchs) :\n${breakdown}\n${product} = ${ref.decimal.toFixed(2)}`;
+		return `📊 Pinnacle (combo ${ref.legCount} matchs) :\n${breakdown}\n${product} = ${ref.decimal.toFixed(2)}${edgeSuffix(boostDecimal, ref.decimal)}`;
 	}
 	return null;
 }
@@ -852,7 +887,7 @@ async function formatMonitoringMessage(event) {
 	if (type === 'add') {
 		try {
 			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
-			refLine = formatPinnacleReference(ref);
+			refLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
 			if (refLine) lines.push(``, refLine);
 		} catch {
 			// silencieux : pas de reference dispo ne doit jamais bloquer l'alerte
@@ -915,7 +950,7 @@ async function refreshTrackedPinnacleRefs(env) {
 				tracked.boost.league,
 				tracked.boost.sport
 			);
-			const newRefLine = formatPinnacleReference(ref);
+			const newRefLine = formatPinnacleReference(ref, parseFrenchDecimal(tracked.boost.newOdds));
 			if (!newRefLine || newRefLine === tracked.lastRefLine) continue;
 
 			await editMessageText(env, tracked.chatId, tracked.messageId, rebuildAddMessageText(tracked.boost, newRefLine));
