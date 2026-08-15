@@ -561,6 +561,129 @@ function findWinToNil(leagues, teamName, period = 0) {
 	return null;
 }
 
+// Helpers génériques réutilisés par plusieurs marchés spéciaux ci-dessous :
+// un participant identifié par un nom fixe ("Odd"/"Even"/"Yes"/"No"...) ou
+// par un nom d'équipe (comparé via teamsMatch, pas une égalité stricte).
+function findSpecialByLabel(leagues, description, label) {
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			if (m.special?.description !== description) continue;
+			const part = (m.participants || []).find((p) => p.name === label);
+			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+function findSpecialByTeam(leagues, description, teamName) {
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			if (m.special?.description !== description) continue;
+			const part = (m.participants || []).find((p) => teamsMatch(p.name, teamName));
+			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+
+// Marché "Double Chance" -- "{Équipe} Or Draw" / "Draw Or {Équipe}" /
+// "{Équipe A} Or {Équipe B}". Prix Pinnacle déjà combiné, pas d'approximation.
+// Le nom de participant Pinnacle contient le nom d'équipe littéral (peut
+// différer en orthographe du nôtre) -- on isole le préfixe/suffixe "Or Draw"
+// / "Draw Or" et on compare via teamsMatch, comme pour findWinToNil.
+function findDoubleChance(leagues, teamName, side, period = 0) {
+	const description = period === 1 ? 'Double Chance 1st Half' : 'Double Chance';
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			if (m.special?.description !== description) continue;
+			const part = (m.participants || []).find((p) => {
+				const name = p.name || '';
+				if (side === 'teamOrDraw') {
+					const mm = name.match(/^(.+)\s+Or\s+Draw$/);
+					return mm && teamsMatch(mm[1], teamName);
+				}
+				if (side === 'drawOrTeam') {
+					const mm = name.match(/^Draw\s+Or\s+(.+)$/);
+					return mm && teamsMatch(mm[1], teamName);
+				}
+				return false;
+			});
+			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+
+// Marché "Équipe Goals" (buts exacts d'une équipe) -- suffixe " Goals" (+
+// " 1st Half"), même logique de préfixe que findWinToNil. Le dernier palier
+// varie selon le sport/la période ("5+" en match complet, parfois "4+" en
+// 1ère mi-temps) -- on essaie le nombre exact puis "N+" en repli plutôt que
+// de figer un seuil.
+function findExactTeamGoals(leagues, teamName, n, period = 0) {
+	const suffix = period === 1 ? ' Goals 1st Half' : ' Goals';
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			const desc = m.special?.description;
+			if (!desc || !desc.endsWith(suffix)) continue;
+			const teamPart = desc.slice(0, desc.length - suffix.length);
+			if (!teamPart || !teamsMatch(teamPart, teamName)) continue;
+			const part =
+				(m.participants || []).find((p) => p.name === String(n)) ||
+				(m.participants || []).find((p) => p.name === `${n}+`);
+			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+
+// Marché "Exact Total Goals" (buts exacts du match, toutes équipes
+// confondues) -- même repli "N" puis "N+" que findExactTeamGoals.
+function findExactTotalGoals(leagues, n, period = 0) {
+	const description = period === 1 ? 'Exact Total Goals 1st Half' : 'Exact Total Goals';
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			if (m.special?.description !== description) continue;
+			const part =
+				(m.participants || []).find((p) => p.name === String(n)) ||
+				(m.participants || []).find((p) => p.name === `${n}+`);
+			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+
+// Marché "Both Teams To Score?" pour un match nommé (équipes connues via
+// l'eventName) -- variante same-match de findScheduleBtts, qui elle sert au
+// combo multi-matchs sans noms d'équipes.
+function findBtts(leagues, teamA, teamB, period = 0) {
+	const description = period === 1 ? 'Both Teams To Score? 1st Half' : 'Both Teams To Score?';
+	for (const { league, matchups, markets } of leagues) {
+		const parent = matchups.find(
+			(m) =>
+				!m.parentId &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!parent) continue;
+		const special = matchups.find((s) => s.parentId === parent.id && s.special?.description === description);
+		const yesPart = special?.participants?.find((p) => p.name === 'Yes');
+		const price = yesPart ? priceForParticipant(markets, special.id, yesPart.id) : null;
+		if (price == null) continue;
+		return { league: league.name, decimal: americanToDecimal(price), exact: true };
+	}
+	return null;
+}
+
 // Marché "Équipe By N" / "Équipe By N+" (marge de victoire) -- somme les
 // probabilités de toutes les marges >= au seuil demandé. Exact (pas d'approximation).
 function findWinningMargin(leagues, teamName, minMargin) {
@@ -822,6 +945,76 @@ function parseLegs(eventName, description, sportKey) {
 	const extractedWinner = extractWinner(d);
 	const winningTeam = isExactlyTeamName(teamA, extractedWinner) ? teamA : isExactlyTeamName(teamB, extractedWinner) ? teamB : null;
 
+	const isFirstHalf = /(?:1ere|1ère|premiere|première)\s+mi-?temps/i.test(d);
+
+	// "Les 2/deux équipes marquent" (même match, pas de combo multi-matchs --
+	// déjà géré plus haut) -- marché Pinnacle direct "Both Teams To Score?".
+	if (/les\s+(?:2|deux)\s+equipes\s+marquent\b/i.test(d)) {
+		return [{ type: 'btts', teamA, teamB, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "TeamX ou match nul" / "Double chance TeamX" -> Pinnacle "TeamX Or Draw" ;
+	// "Match nul ou TeamY" -> "Draw Or TeamY". Marché "Double Chance" direct.
+	const teamOrDrawMatch =
+		d.match(/^(.+?)\s+ou\s+(?:le\s+)?match\s+nul\.?\s*$/i) || d.match(/^double\s+chance\s*:?\s*(.+?)\.?\s*$/i);
+	if (teamOrDrawMatch) {
+		const cand = teamOrDrawMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'doubleChance', team, side: 'teamOrDraw', period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+	const drawOrTeamMatch = d.match(/^(?:le\s+)?match\s+nul\s+ou\s+(.+?)\.?\s*$/i);
+	if (drawOrTeamMatch) {
+		const cand = drawOrTeamMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'doubleChance', team, side: 'drawOrTeam', period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "TeamX ne perd pas" -- marché Pinnacle direct "Draw No Bet" (mise
+	// remboursée en cas de nul, pas une combinaison à calculer).
+	const drawNoBetMatch = d.match(/^(.+?)\s+ne\s+perd\s+pas(?:\s+(?:ce|le)\s+match)?\.?\s*$/i);
+	if (drawNoBetMatch) {
+		const cand = drawNoBetMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'drawNoBet', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "TeamX marque en premier" / "TeamX marque le premier but" -- marché
+	// Pinnacle direct "First Team To Score" (Team/Team/Neither).
+	const firstToScoreMatch =
+		d.match(/^(.+?)\s+(?:marque|inscrit)\s+(?:le\s+)?premi[eè]re?\s+but\b/i) ||
+		d.match(/^(.+?)\s+marque\s+en\s+premier\b/i);
+	if (firstToScoreMatch) {
+		const cand = firstToScoreMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'firstToScore', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "Nombre/total de buts pair/impair" -- marché Pinnacle direct "Total
+	// Goals Odd/Even".
+	const oddEvenMatch = d.match(/(?:nombre|total)\s+(?:de\s+)?buts?\s+(impair|pair)\b/i);
+	if (oddEvenMatch) {
+		return [{ type: 'oddEvenTotal', label: /impair/i.test(oddEvenMatch[1]) ? 'Odd' : 'Even', period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "TeamX marque exactement N buts" -- marché Pinnacle direct "TeamX Goals".
+	const exactTeamGoalsMatch = d.match(/^(.+?)\s+marque\s+exactement\s+(\d+)\s*buts?\b/i);
+	if (exactTeamGoalsMatch) {
+		const cand = exactTeamGoalsMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [
+				{ type: 'exactTeamGoals', team, n: parseInt(exactTeamGoalsMatch[2], 10), period: isFirstHalf ? 1 : 0, sport: sportKey },
+			];
+		}
+	}
+
+	// "Exactement N buts au total / dans le match" -- marché Pinnacle direct
+	// "Exact Total Goals" (pas lié à une équipe précise).
+	const exactTotalGoalsMatch = d.match(/exactement\s+(\d+)\s*buts?\s+(?:au\s+total|dans\s+le\s+match|marques?)\b/i);
+	if (exactTotalGoalsMatch) {
+		return [{ type: 'exactTotalGoals', n: parseInt(exactTotalGoalsMatch[1], 10), period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
 	// Deux formulations existent pour la marge de victoire : "gagne par/de N
 	// buts ou plus" et "gagne par au moins N buts d'écart".
@@ -960,6 +1153,27 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'winToNil') {
 		return findWinToNil(leagues, leg.team, leg.period || 0);
+	}
+	if (leg.type === 'btts') {
+		return findBtts(leagues, leg.teamA, leg.teamB, leg.period || 0);
+	}
+	if (leg.type === 'doubleChance') {
+		return findDoubleChance(leagues, leg.team, leg.side, leg.period || 0);
+	}
+	if (leg.type === 'drawNoBet') {
+		return findSpecialByTeam(leagues, leg.period === 1 ? 'Draw No Bet 1st Half' : 'Draw No Bet', leg.team);
+	}
+	if (leg.type === 'firstToScore') {
+		return findSpecialByTeam(leagues, leg.period === 1 ? 'First Team To Score 1st Half' : 'First Team To Score', leg.team);
+	}
+	if (leg.type === 'oddEvenTotal') {
+		return findSpecialByLabel(leagues, leg.period === 1 ? 'Total Goals Odd/Even 1st Half' : 'Total Goals Odd/Even', leg.label);
+	}
+	if (leg.type === 'exactTeamGoals') {
+		return findExactTeamGoals(leagues, leg.team, leg.n, leg.period || 0);
+	}
+	if (leg.type === 'exactTotalGoals') {
+		return findExactTotalGoals(leagues, leg.n, leg.period || 0);
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
