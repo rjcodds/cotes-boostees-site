@@ -1019,6 +1019,35 @@ function findTotal(leagues, teamA, teamB, side, points) {
 	return null;
 }
 
+// "Les deux joueurs gagnent chacun (au moins) un set" (tennis, MÊME match)
+// équivaut EXACTEMENT à "le match va au set décisif" en best-of-3 (2 sets
+// gagnants) : la seule façon que les deux joueurs gagnent chacun >= 1 set
+// est un score 2-1, ce qui revient exactement à "plus de 2,5 sets joués"
+// -- pas une approximation, une AUTRE formulation du marché "Total Sets"
+// déjà publié par Pinnacle sur le marché principal. Ne tient PAS en best-of-5
+// (Grand Chelem messieurs : un 3-1 satisfait aussi la condition sans être
+// "Over" la ligne totale) -- on vérifie donc explicitement que la ligne du
+// marché Total vaut 2.5 avant de résoudre, sinon silencieux plutôt qu'un
+// chiffre faux.
+function findBothWinASet(leagues, teamA, teamB) {
+	for (const { league, matchups, markets } of leagues) {
+		const matchup = matchups.find(
+			(m) =>
+				!m.parentId &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!matchup) continue;
+		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0);
+		if (!market || market.prices?.[0]?.points !== 2.5) continue; // pas confirmé best-of-3 -> silencieux
+		const p = market.prices.find((pr) => pr.designation === 'over');
+		if (!p) continue;
+		return { league: league.name, decimal: americanToDecimal(p.price), exact: true };
+	}
+	return null;
+}
+
 // --- Analyse du texte français libre des cotes boostées ---
 
 // Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
@@ -1148,6 +1177,14 @@ function parseLegs(eventName, description, sportKey) {
 	// --- Marchés combinés (vérifiés avant leurs variantes simples ci-dessous,
 	// certaines n'étant pas ancrées en fin de chaîne et voleraient sinon le
 	// combo pour ne renvoyer que la moitié de la condition) ---
+
+	// "Les deux joueurs gagnent chacun (au moins) un set" (tennis, MÊME match
+	// -- si "respectivement" est présent c'est le combo multi-matchs déjà géré
+	// plus haut) -- voir findBothWinASet : équivaut au marché "Total Sets"
+	// (Over 2.5) déjà publié par Pinnacle, pas une approximation.
+	if (!/respectivement/i.test(d) && /gagnent?\s+chacune?\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)) {
+		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
+	}
 
 	// "Les 2 équipes marquent et plus/moins de N buts" -- marché Pinnacle
 	// direct "Both Teams To Score/Total Goals".
@@ -1567,6 +1604,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'htft') {
 		return findHalfTimeFullTime(leagues, leg.teamA, leg.teamB, leg.htOutcome, leg.ftOutcome);
+	}
+	if (leg.type === 'bothWinASet') {
+		return findBothWinASet(leagues, leg.teamA, leg.teamB);
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
