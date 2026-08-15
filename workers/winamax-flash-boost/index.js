@@ -290,6 +290,95 @@ function parseFrenchDecimal(s) {
 	return isNaN(n) ? null : n;
 }
 
+// Extrait un décimal comparable d'une ref Pinnacle, quel que soit son type --
+// sert au calcul d'edge % pour le digest quotidien (voir logDigestItem).
+function refComparableDecimal(ref) {
+	if (!ref) return null;
+	if (ref.type === 'moneyline') {
+		const backed = ref.backedDesignation === 'home' ? ref.moneyline.home : ref.backedDesignation === 'away' ? ref.moneyline.away : null;
+		return backed ? americanToDecimal(backed.price) : null;
+	}
+	if (ref.type === 'single' || ref.type === 'combo') return ref.decimal;
+	return null;
+}
+
+function todayKey() {
+	const parts = new Intl.DateTimeFormat('fr-FR', {
+		timeZone: 'Europe/Paris',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+	}).formatToParts(new Date());
+	const y = parts.find((p) => p.type === 'year').value;
+	const m = parts.find((p) => p.type === 'month').value;
+	const d = parts.find((p) => p.type === 'day').value;
+	return `${y}-${m}-${d}`;
+}
+
+// Log un item pour le digest quotidien -- une clé KV par item (pas de
+// compteur à incrémenter, évite les races en écriture concurrente).
+async function logDigestItem(env, boost, edge) {
+	const key = `digestitem:${todayKey()}:${boost.marketId}`;
+	await env.SEEN_BOOSTS.put(
+		key,
+		JSON.stringify({ eventName: boost.eventName, description: boost.description, newOdds: boost.newOdds, edge }),
+		{ expirationTtl: 2 * 24 * 60 * 60 }
+	);
+}
+
+async function computeDigestStats(env, date) {
+	const list = await env.SEEN_BOOSTS.list({ prefix: `digestitem:${date}:` });
+	let count = 0;
+	let withRef = 0;
+	let best = null;
+	for (const k of list.keys) {
+		const raw = await env.SEEN_BOOSTS.get(k.name);
+		if (!raw) continue;
+		const item = JSON.parse(raw);
+		count++;
+		if (item.edge != null) {
+			withRef++;
+			if (!best || item.edge > best.edge) best = item;
+		}
+	}
+	return { count, withRef, best };
+}
+
+// Combine les stats du jour des deux bookmakers et poste un récap sur le
+// canal privé -- ne tourne que côté Winamax (même logique que
+// detectDuplicates : évite un digest en double).
+async function postDailyDigest(env) {
+	if (!env.MONITORING_CHAT_ID) return;
+	const date = todayKey();
+	const mine = await computeDigestStats(env, date);
+	let other = { count: 0, withRef: 0, best: null };
+	try {
+		const res = await fetch('https://unibet-flash-boost.jc-hd-affiliation.workers.dev/digest-data');
+		if (res.ok) other = await res.json();
+	} catch {
+		// silencieux : un digest partiel (juste Winamax) vaut mieux que pas de digest
+	}
+
+	const totalCount = mine.count + other.count;
+	const totalWithRef = mine.withRef + other.withRef;
+	const globalBest = [mine.best, other.best].filter(Boolean).sort((a, b) => b.edge - a.edge)[0];
+
+	const lines = [
+		`📅 Digest quotidien — ${date}`,
+		``,
+		`Cotes flash postées : ${totalCount} (Winamax ${mine.count} / Unibet ${other.count})`,
+		`Avec référence Pinnacle : ${totalWithRef}`,
+	];
+	if (globalBest) {
+		lines.push(``, `🏆 Meilleure valeur : ${globalBest.eventName}`, globalBest.description, `${globalBest.newOdds} (+${globalBest.edge.toFixed(1)}% vs Pinnacle)`);
+	}
+	try {
+		await sendToChat(env, env.MONITORING_CHAT_ID, lines.join('\n'));
+	} catch (e) {
+		console.log('postDailyDigest: send failed:', String(e));
+	}
+}
+
 async function fetchLeagueData(leagueId) {
 	const headers = {
 		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -1093,6 +1182,16 @@ async function checkAndPost(env) {
 		await sendTelegramMessage(env, formatTelegramMessage(boost));
 		await env.SEEN_BOOSTS.put(key, '1', { expirationTtl: SEEN_TTL_SECONDS });
 		posted++;
+
+		try {
+			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
+			const boostDecimal = parseFrenchDecimal(boost.newOdds);
+			const pinnacleDecimal = refComparableDecimal(ref);
+			const edge = boostDecimal && pinnacleDecimal ? (boostDecimal / pinnacleDecimal - 1) * 100 : null;
+			await logDigestItem(env, boost, edge);
+		} catch {
+			// silencieux : le digest est une info secondaire, ne doit jamais bloquer le posting
+		}
 	}
 	return { checked: boosts.length, eligible: eligible.length, posted };
 }
@@ -1123,6 +1222,10 @@ export default {
 	},
 
 	async scheduled(event, env, ctx) {
+		if (event.cron === '7 8 * * *') {
+			ctx.waitUntil(postDailyDigest(env).catch((e) => console.error('postDailyDigest failed:', e)));
+			return;
+		}
 		ctx.waitUntil(
 			checkAndPost(env).catch((e) => console.error('checkAndPost failed:', e))
 		);

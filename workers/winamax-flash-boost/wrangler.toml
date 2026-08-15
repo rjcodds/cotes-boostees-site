@@ -8,8 +8,10 @@ compatibility_flags = ["nodejs_compat"]
 # dépassement au-delà des 10h incluses -- reste très largement dans le budget.
 # La fenêtre "Grosse Cote Boostée" dure 30-35 min chez Winamax, donc ça laisse
 # 6+ chances de la voir.
+# Le deuxième cron (7 8 * * *, 8h07 heure locale) déclenche le digest quotidien
+# (voir postDailyDigest dans index.js) au lieu d'un check normal.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "7 8 * * *"]
 
 [browser]
 binding = "BROWSER"
