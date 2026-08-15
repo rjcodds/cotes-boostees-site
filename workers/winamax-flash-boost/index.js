@@ -44,6 +44,39 @@ const SPORT_KEY_BY_EMOJI = {
 	'🤾': 'handball',
 	'🏐': 'volleyball',
 };
+const EMOJI_BY_SPORT_KEY = {
+	football: '⚽',
+	basketball: '🏀',
+	tennis: '🎾',
+	baseball: '⚾',
+	hockey: '🏒',
+	mma: '🥊',
+	boxing: '🥊',
+	rugby: '🏉',
+	handball: '🤾',
+	volleyball: '🏐',
+};
+
+// Source FIABLE du sport : state.categories[match.categoryId].categoryName
+// (ex: "Football", "Baseball", "MMA") -- trouvé en creusant pourquoi "Atlas -
+// Tigres" (Liga MX) et le combo MLB ressortaient avec sport:null : le titre
+// seul ("Atlas - Tigres") ne contient aucun mot-clé sport, donc
+// guessSportEmoji (deviné à partir du TITRE) échouait silencieusement alors
+// que la vraie donnée structurée était disponible tout du long. MMA/Boxe sont
+// ici distingués PRÉCISÉMENT (contrairement à l'émoji 🥊 partagé, ambigu) --
+// plus besoin du groupe 'combat' quand la catégorie est connue.
+const SPORT_KEY_BY_CATEGORY_NAME = {
+	Football: 'football',
+	Basketball: 'basketball',
+	Tennis: 'tennis',
+	Baseball: 'baseball',
+	'Hockey sur glace': 'hockey',
+	MMA: 'mma',
+	Boxe: 'boxing',
+	Rugby: 'rugby',
+	Handball: 'handball',
+	Volleyball: 'volleyball',
+};
 
 function formatOdd(n) {
 	return Number(n).toFixed(2).replace('.', ',');
@@ -86,7 +119,14 @@ function parseBoosts(state) {
 		if (!outcome || newOdd == null || oldOdd == null) continue;
 
 		const eventName = (match.title || '').replace(/^Cote Boost[ée]e\s*:\s*/i, '').trim();
-		const sportEmoji = guessSportEmoji(match.title || '');
+		// state.categories[categoryId].categoryName est une donnée structurée
+		// fiable ("Football", "Baseball", "MMA"...) -- prioritaire sur
+		// guessSportEmoji qui devine à partir du TITRE et échoue silencieusement
+		// dès que ni équipe ni compétition ne contient un mot-clé sport (ex:
+		// "Atlas - Tigres", aucun des deux noms n'évoque le foot).
+		const categoryName = state.categories?.[String(match.categoryId)]?.categoryName;
+		const sportFromCategory = categoryName ? SPORT_KEY_BY_CATEGORY_NAME[categoryName] : null;
+		const sportEmoji = sportFromCategory ? EMOJI_BY_SPORT_KEY[sportFromCategory] : guessSportEmoji(match.title || '');
 		// Pour les paris boostés, tournamentId pointe souvent vers un regroupement
 		// générique ("Tous les paris") plutôt que la vraie compétition -- inutile
 		// comme indice de matching, on le traite comme absent plutôt que de faire
@@ -98,7 +138,7 @@ function parseBoosts(state) {
 			marketId: String(bet.betId),
 			eventName,
 			sportEmoji,
-			sport: SPORT_KEY_BY_EMOJI[sportEmoji] || null,
+			sport: sportFromCategory || SPORT_KEY_BY_EMOJI[sportEmoji] || null,
 			league: tournamentName,
 			description: outcome.label,
 			oldOdds: formatOdd(oldOdd),
@@ -1290,10 +1330,14 @@ function parseLegs(eventName, description, sportKey) {
 	}
 
 	// "TeamX mène à la mi-temps et gagne le match" (même équipe aux deux
-	// bouts) / "...et TeamY gagne le match" (équipes différentes) / "Match nul
-	// à la mi-temps et TeamX gagne le match" / "TeamX mène à la mi-temps et
-	// match nul (à la fin)" -- marché Pinnacle direct "Half-Time/Full-Time".
-	const htftSameTeamMatch = d.match(/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
+	// bouts) / "TeamX gagne à la mi-temps et à la fin du match" (autre
+	// formulation réelle vue sur un vrai boost Liga MX, "gagne" répété au lieu
+	// de "mène") / "...et TeamY gagne le match" (équipes différentes) / "Match
+	// nul à la mi-temps et TeamX gagne le match" / "TeamX mène à la mi-temps
+	// et match nul (à la fin)" -- marché Pinnacle direct "Half-Time/Full-Time".
+	const htftSameTeamMatch =
+		d.match(/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+gagne(?:\s+le\s+match)?\.?\s*$/i) ||
+		d.match(/^(.+?)\s+gagne\s+[aà]\s+la\s+mi-?temps\s+et\s+[aà]\s+la\s+fin\s+du\s+match\.?\s*$/i);
 	const htftDrawAtHalfMatch = d.match(
 		/^match\s+nul\s+[aà]\s+la\s+mi-?temps\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i
 	);
@@ -2520,6 +2564,29 @@ export default {
 		if (url.pathname === '/backfill-pinnacle') {
 			const result = await backfillPinnacleRefs(env);
 			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-pinnacle') {
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			const d = url.searchParams.get('d') || `${a} gagne`;
+			const league = url.searchParams.get('league') || null;
+			const sport = url.searchParams.get('sport') || 'football';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description&sport=football&league=(optionnel)', { status: 400 });
+			const legs = parseLegs(`${a} - ${b}`, d, sport);
+			const ref = await findPinnacleReference(`${a} - ${b}`, d, league, sport);
+			return new Response(JSON.stringify({ legs, ref }), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/debug-raw-match') {
+			const q = (url.searchParams.get('q') || '').toLowerCase();
+			const state = await fetchPreloadedState(env);
+			const match = Object.values(state.matches || {}).find((m) => (m.title || '').toLowerCase().includes(q));
+			const tournament = match ? state.tournaments?.[String(match.tournamentId)] : null;
+			const category = match ? state.categories?.[String(match.categoryId)] : null;
+			const sport = match ? state.sports?.[String(match.sportId)] : null;
+			return new Response(
+				JSON.stringify({ match, tournament, category, sport, topLevelKeys: Object.keys(state) }, null, 2),
+				{ headers: { 'Content-Type': 'application/json' } }
+			);
 		}
 		if (url.pathname === '/test-piwi') {
 			const marketId = url.searchParams.get('marketId');

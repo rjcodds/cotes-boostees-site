@@ -1369,10 +1369,14 @@ function parseLegs(eventName, description, sportKey) {
 	}
 
 	// "TeamX mène à la mi-temps et gagne le match" (même équipe aux deux
-	// bouts) / "...et TeamY gagne le match" (équipes différentes) / "Match nul
-	// à la mi-temps et TeamX gagne le match" / "TeamX mène à la mi-temps et
-	// match nul (à la fin)" -- marché Pinnacle direct "Half-Time/Full-Time".
-	const htftSameTeamMatch = d.match(/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
+	// bouts) / "TeamX gagne à la mi-temps et à la fin du match" (autre
+	// formulation réelle vue sur un vrai boost Liga MX, "gagne" répété au lieu
+	// de "mène") / "...et TeamY gagne le match" (équipes différentes) / "Match
+	// nul à la mi-temps et TeamX gagne le match" / "TeamX mène à la mi-temps
+	// et match nul (à la fin)" -- marché Pinnacle direct "Half-Time/Full-Time".
+	const htftSameTeamMatch =
+		d.match(/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+gagne(?:\s+le\s+match)?\.?\s*$/i) ||
+		d.match(/^(.+?)\s+gagne\s+[aà]\s+la\s+mi-?temps\s+et\s+[aà]\s+la\s+fin\s+du\s+match\.?\s*$/i);
 	const htftDrawAtHalfMatch = d.match(
 		/^match\s+nul\s+[aà]\s+la\s+mi-?temps\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i
 	);
