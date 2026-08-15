@@ -1040,7 +1040,7 @@ function findMoneyline(leagues, teamA, teamB, period = 0) {
 	return null;
 }
 
-function findTotal(leagues, teamA, teamB, side, points) {
+function findTotal(leagues, teamA, teamB, side, points, period = 0) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
@@ -1050,7 +1050,39 @@ function findTotal(leagues, teamA, teamB, side, points) {
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
 		);
 		if (!matchup) continue;
-		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0 && mk.prices?.[0]?.points === points);
+		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points);
+		if (!market) continue;
+		const p = market.prices.find((pr) => pr.designation === side);
+		if (!p) continue;
+		return { league: league.name, decimal: americanToDecimal(p.price), exact: true };
+	}
+	return null;
+}
+
+// Marché "team_total" -- Over/Under sur les buts D'UNE équipe, disponible
+// directement sur le matchup principal (pas un special) via side:'home'/
+// 'away'. teamName sert à déterminer quel côté (home/away) correspond à
+// l'équipe demandée.
+function findTeamTotal(leagues, teamA, teamB, teamName, side, points, period = 0) {
+	for (const { league, matchups, markets } of leagues) {
+		const matchup = matchups.find(
+			(m) =>
+				!m.parentId &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!matchup) continue;
+		const homeName = matchup.participants.find((p) => p.alignment === 'home')?.name;
+		const wantSide = teamsMatch(homeName, teamName) ? 'home' : 'away';
+		const market = markets.find(
+			(mk) =>
+				mk.matchupId === matchup.id &&
+				mk.type === 'team_total' &&
+				mk.period === period &&
+				mk.side === wantSide &&
+				mk.prices?.[0]?.points === points
+		);
 		if (!market) continue;
 		const p = market.prices.find((pr) => pr.designation === side);
 		if (!p) continue;
@@ -1399,15 +1431,20 @@ function parseLegs(eventName, description, sportKey) {
 		if (team) return [{ type: 'drawNoBet', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
 	}
 
-	// "TeamX marque en premier" / "TeamX marque le premier but" -- marché
-	// Pinnacle direct "First Team To Score" (Team/Team/Neither).
+	// "TeamX marque en premier" / "TeamX marque le premier but" / "TeamX
+	// ouvre le score" -- marché Pinnacle direct "First Team To Score"
+	// (Team/Team/Neither) si c'est une équipe ; sinon probablement un joueur
+	// ("Mbappé ouvre le score") -- marché Piwi direct "Player First
+	// Goalscorer" (distinct de "Player To Score", n'importe quand).
 	const firstToScoreMatch =
 		d.match(/^(.+?)\s+(?:marque|inscrit)\s+(?:le\s+)?premi[eè]re?\s+but\b/i) ||
-		d.match(/^(.+?)\s+marque\s+en\s+premier\b/i);
+		d.match(/^(.+?)\s+marque\s+en\s+premier\b/i) ||
+		d.match(/^(.+?)\s+ouvre\s+le\s+score\.?\s*$/i);
 	if (firstToScoreMatch) {
 		const cand = firstToScoreMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
 		if (team) return [{ type: 'firstToScore', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		return [{ type: 'playerFirstScorer', player: cand, sport: sportKey }];
 	}
 
 	// "TeamX marque un nombre de buts pair/impair" -- marché Pinnacle direct
@@ -1447,6 +1484,87 @@ function parseLegs(eventName, description, sportKey) {
 	const exactTotalGoalsMatch = d.match(/exactement\s+(\d+)\s*buts?\s+(?:au\s+total|dans\s+le\s+match|marques?)\b/i);
 	if (exactTotalGoalsMatch) {
 		return [{ type: 'exactTotalGoals', n: parseInt(exactTotalGoalsMatch[1], 10), period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "TeamX marque plus/moins de N buts" -- total buts D'UNE ÉQUIPE (pas le
+	// match entier, distinct de "total" et de "exactement N buts" ci-dessus).
+	// Marché Pinnacle direct "team_total" (type de marché sur le matchup
+	// principal, pas un special). Marché Piwi direct "{Équipe} Over/Under N
+	// Goals".
+	const teamTotalMatch = d.match(/^(.+?)\s+marque\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?\.?\s*$/i);
+	if (teamTotalMatch) {
+		const cand = teamTotalMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [
+				{
+					type: 'teamTotal',
+					team,
+					teamA,
+					teamB,
+					side: /plus/i.test(teamTotalMatch[2]) ? 'over' : 'under',
+					points: parseFloat(teamTotalMatch[3].replace(',', '.')),
+					period: isFirstHalf ? 1 : 0,
+					sport: sportKey,
+				},
+			];
+		}
+	}
+
+	// "Plus/moins de N cartons (dans le match)" -- marché Piwi direct "Cards
+	// Over/Under N" (aucun équivalent Pinnacle trouvé pour ce marché).
+	const cardsTotalMatch = d.match(/(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*cartons?\b/i);
+	if (cardsTotalMatch) {
+		return [
+			{
+				type: 'cardsTotal',
+				side: /plus/i.test(cardsTotalMatch[1]) ? 'over' : 'under',
+				points: parseFloat(cardsTotalMatch[2].replace(',', '.')),
+				sport: sportKey,
+			},
+		];
+	}
+
+	// "Plus/moins de N corners (dans le match)" -- marché Piwi direct "Corners
+	// Over/Under N".
+	const cornersTotalMatch = d.match(/(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*corners?\b/i);
+	if (cornersTotalMatch) {
+		return [
+			{
+				type: 'cornersTotal',
+				side: /plus/i.test(cornersTotalMatch[1]) ? 'over' : 'under',
+				points: parseFloat(cornersTotalMatch[2].replace(',', '.')),
+				sport: sportKey,
+			},
+		];
+	}
+
+	// "Un penalty est tiré/accordé/sifflé dans le match" -- marché Piwi direct
+	// "Penalty Taken?".
+	if (/\bpenalty\b/i.test(d) && /\b(tir[ée]|accord[ée]|siffl[ée]|obtenu)\b/i.test(d)) {
+		return [{ type: 'penaltyTaken', sport: sportKey }];
+	}
+
+	// "{Joueur} inscrit/marque un doublé" -> au moins 2 buts ; "un
+	// triplé"/"un hat-trick" -> marché Piwi dédié "exactement 3 ou plus".
+	// Marché Piwi direct ("Player To Score 2 Goals or More" / "Player To
+	// Score a Hat-trick?"), aucun équivalent Pinnacle (voir playerScorer).
+	const playerBraceMatch = d.match(/^(.+?)\s+(?:inscrit|marque)\s+un\s+doubl[ée]\.?\s*$/i);
+	const playerHatTrickMatch = d.match(/^(.+?)\s+(?:inscrit|marque)\s+(?:un\s+)?(?:triple|hat-?trick)\.?\s*$/i);
+	if (playerBraceMatch) {
+		return [{ type: 'playerScorer', player: playerBraceMatch[1].trim(), minGoals: 2, sport: sportKey }];
+	}
+	if (playerHatTrickMatch) {
+		return [{ type: 'playerScorer', player: playerHatTrickMatch[1].trim(), minGoals: 3, sport: sportKey }];
+	}
+
+	// "{Joueur} reçoit un carton" / "est averti" / "voit un carton
+	// (jaune|rouge)" -- marché Piwi direct "Player Shown a Card".
+	const playerCardedMatch = d.match(
+		/^(.+?)\s+(?:re[cç]oit\s+un\s+carton|est\s+averti|voit\s+un\s+carton)(?:\s+(?:jaune|rouge))?\.?\s*$/i
+	);
+	if (playerCardedMatch) {
+		return [{ type: 'playerCarded', player: playerCardedMatch[1].trim(), sport: sportKey }];
 	}
 
 	// "{Joueur} buteur" -- marché Piwi direct "Player To Score" (aucun
@@ -1517,6 +1635,7 @@ function parseLegs(eventName, description, sportKey) {
 				teamB,
 				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
 				points: parseFloat(totalMatch[2].replace(',', '.')),
+				period: isFirstHalf ? 1 : 0,
 				sport: sportKey,
 			},
 		];
@@ -1608,7 +1727,7 @@ async function resolveLeg(leg, leagueData) {
 		return findWinningMargin(leagues, leg.team, leg.margin, leg.period || 0);
 	}
 	if (leg.type === 'total') {
-		return findTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points);
+		return findTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points, leg.period || 0);
 	}
 	if (leg.type === 'correctScore') {
 		return findCorrectScoreSum(leagues, leg.team, leg.opponent, leg.scoreLines, leg.period || 0);
@@ -1636,6 +1755,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'exactTotalGoals') {
 		return findExactTotalGoals(leagues, leg.n, leg.period || 0);
+	}
+	if (leg.type === 'teamTotal') {
+		return findTeamTotal(leagues, leg.teamA, leg.teamB, leg.team, leg.side, leg.points, leg.period || 0);
 	}
 	if (leg.type === 'teamToScore') {
 		return findTeamToScore(leagues, leg.team, leg.period || 0);
@@ -2404,7 +2526,7 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const backed = leg.team ? sels.find((s) => teamsMatch(s.name, leg.team)) : null;
 		return { decimal: backed ? backed.back : null, all: sels };
 	}
-	if (leg.type === 'total') {
+	if (leg.type === 'total' && (leg.period || 0) === 0) {
 		const mid = mk('Goal Lines');
 		if (!mid) return null;
 		// runnerName inclut le chiffre ("Over 2.5", pas juste "Over") -- on ne
@@ -2414,15 +2536,69 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name, hc) => name?.startsWith(prefix) && hc === leg.points);
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
-	if (leg.type === 'winAndTotal' && leg.points === 2.5) {
-		const mid = mk('Match Odds and Over/Under 2.5 Goals');
+	if (leg.type === 'total' && leg.period === 1) {
+		// "First Half Goals N" est un marché SÉPARÉ par ligne (pas consolidé
+		// comme Goal Lines) -- même structure que Cards/Corners Over/Under.
+		const mid = mk(`First Half Goals ${leg.points}`);
 		if (!mid) return null;
-		const cond = leg.side === 'over' ? 'Over 2.5 Goals' : 'Under 2.5 Goals';
+		const prefix = leg.side === 'over' ? 'Over' : 'Under';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name?.startsWith(prefix));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'winAndTotal') {
+		// N'importe quelle ligne, pas seulement 2.5 -- le nom du marché
+		// l'embarque directement ("Match Odds and Over/Under 3.5 Goals"),
+		// silencieux si Piwi n'a pas cette ligne précise pour ce match.
+		const mid = mk(`Match Odds and Over/Under ${leg.points} Goals`);
+		if (!mid) return null;
+		const cond = leg.side === 'over' ? `Over ${leg.points} Goals` : `Under ${leg.points} Goals`;
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => {
 			const idx = name.lastIndexOf('/');
 			if (idx === -1) return false;
 			return name.slice(idx + 1) === cond && teamsMatch(name.slice(0, idx), leg.team);
 		});
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'teamTotal') {
+		// Marché "{Équipe} Over/Under N Goals" -- nom du marché lui-même
+		// contient l'équipe, recherche floue via piwiMarketIdForTeamSuffix
+		// (même logique que Win to Nil).
+		const mid = piwiMarketIdForTeamSuffix(piwiEvent, ` Over/Under ${leg.points} Goals`, leg.team);
+		if (!mid) return null;
+		const prefix = leg.side === 'over' ? 'Over' : 'Under';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name?.startsWith(prefix));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'cardsTotal') {
+		const mid = mk(`Cards Over/Under ${leg.points}`);
+		if (!mid) return null;
+		const prefix = leg.side === 'over' ? 'Over' : 'Under';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name?.startsWith(prefix));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'cornersTotal') {
+		const mid = mk(`Corners Over/Under ${leg.points}`);
+		if (!mid) return null;
+		const prefix = leg.side === 'over' ? 'Over' : 'Under';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name?.startsWith(prefix));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'penaltyTaken') {
+		const mid = mk('Penalty Taken?');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'playerFirstScorer') {
+		const mid = mk('Player First Goalscorer');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.player));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'playerCarded') {
+		const mid = mk('Player Shown a Card');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.player));
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
 	if (leg.type === 'correctScore' && homeAway) {
@@ -2482,7 +2658,11 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
 	if (leg.type === 'playerScorer') {
-		const mid = mk('Player To Score');
+		// minGoals absent ou 1 -> "Player To Score" (n'importe quand) ; 2 ->
+		// doublé ; 3+ -> "Hat-trick?" (marché dédié, pas une somme de lignes).
+		const marketName =
+			leg.minGoals >= 3 ? 'Player To Score a Hat-trick?' : leg.minGoals === 2 ? 'Player To Score 2 Goals or More' : 'Player To Score';
+		const mid = mk(marketName);
 		if (!mid) return null;
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.player));
 		return sels?.[0] ? { decimal: sels[0].back } : null;
