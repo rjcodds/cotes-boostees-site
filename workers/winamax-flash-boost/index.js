@@ -366,7 +366,7 @@ async function postDailyDigest(env) {
 	const lines = [
 		`📅 Digest quotidien — ${date}`,
 		``,
-		`Cotes flash postées : ${totalCount} (Winamax ${mine.count} / Unibet ${other.count})`,
+		`Cotes boostées classiques vues : ${totalCount} (Winamax ${mine.count} / Unibet ${other.count})`,
 		`Avec référence Pinnacle : ${totalWithRef}`,
 	];
 	if (globalBest) {
@@ -973,17 +973,21 @@ async function formatMonitoringMessage(event) {
 	// Référence Pinnacle : uniquement pour les nouvelles cotes, uniquement si un
 	// pari équivalent (victoire simple / total buts) existe sur une grande ligue.
 	let refLine = null;
+	let edge = null;
 	if (type === 'add') {
 		try {
 			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
-			refLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
+			const boostDecimal = parseFrenchDecimal(boost.newOdds);
+			const pinnacleDecimal = refComparableDecimal(ref);
+			edge = boostDecimal && pinnacleDecimal ? (boostDecimal / pinnacleDecimal - 1) * 100 : null;
+			refLine = formatPinnacleReference(ref, boostDecimal);
 			if (refLine) lines.push(``, refLine);
 		} catch {
 			// silencieux : pas de reference dispo ne doit jamais bloquer l'alerte
 		}
 	}
 
-	return { text: lines.join('\n'), refLine };
+	return { text: lines.join('\n'), refLine, edge };
 }
 
 const PIN_TRACK_TTL_SECONDS = SEEN_TTL_SECONDS; // même durée de vie qu'un boost "vu"
@@ -1001,15 +1005,25 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 	console.log(`postMonitoringDiff: prev=${prevBoosts.length} current=${currentBoosts.length} events=${events.length}`);
 	for (const event of events) {
 		try {
-			const { text, refLine } = await formatMonitoringMessage(event);
+			const { text, refLine, edge } = await formatMonitoringMessage(event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 
-			if (event.type === 'add' && refLine && sent?.message_id) {
-				await env.SEEN_BOOSTS.put(
-					`pintrack:${event.boost.marketId}`,
-					JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sent.message_id, boost: event.boost, lastRefLine: refLine }),
-					{ expirationTtl: PIN_TRACK_TTL_SECONDS }
-				);
+			if (event.type === 'add') {
+				if (refLine && sent?.message_id) {
+					await env.SEEN_BOOSTS.put(
+						`pintrack:${event.boost.marketId}`,
+						JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sent.message_id, boost: event.boost, lastRefLine: refLine }),
+						{ expirationTtl: PIN_TRACK_TTL_SECONDS }
+					);
+				}
+				// Digest quotidien : toutes les cotes "classiques" suivies en
+				// monitoring, pas seulement le sous-ensemble flash (≤10€, dispo
+				// quelques minutes) qui part sur le canal public.
+				try {
+					await logDigestItem(env, event.boost, edge);
+				} catch {
+					// silencieux : le digest est une info secondaire
+				}
 			}
 			if (event.type === 'remove') {
 				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
@@ -1182,16 +1196,6 @@ async function checkAndPost(env) {
 		await sendTelegramMessage(env, formatTelegramMessage(boost));
 		await env.SEEN_BOOSTS.put(key, '1', { expirationTtl: SEEN_TTL_SECONDS });
 		posted++;
-
-		try {
-			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
-			const boostDecimal = parseFrenchDecimal(boost.newOdds);
-			const pinnacleDecimal = refComparableDecimal(ref);
-			const edge = boostDecimal && pinnacleDecimal ? (boostDecimal / pinnacleDecimal - 1) * 100 : null;
-			await logDigestItem(env, boost, edge);
-		} catch {
-			// silencieux : le digest est une info secondaire, ne doit jamais bloquer le posting
-		}
 	}
 	return { checked: boosts.length, eligible: eligible.length, posted };
 }
