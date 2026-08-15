@@ -2175,6 +2175,17 @@ async function fetchPiwiMarketPrices(marketId, eventId) {
 // partielle -- à enrichir au fil des vraies cotes rencontrées.
 const PIWI_KNOWN_COMPETITIONS = [
 	'117', // Spain - La Liga
+	'10932509', // England - Premier League
+	'81', // Italy - Serie A
+	'59', // Germany - Bundesliga
+	'61', // Germany - Bundesliga 2
+	'55', // France - Ligue 1
+	'57', // France - Ligue 2
+	'7129730', // England - Championship
+	'228', // UEFA Champions League
+	'9404054', // Netherlands - Eredivisie
+	'194215', // Turkey - Super League
+	'5627174', // Mexico - Liga MX
 ];
 
 function findEventInList(list, teamA, teamB) {
