@@ -30,16 +30,21 @@ const SPORT_EMOJI = {
 };
 
 // Sports pour lesquels Pinnacle expose une recherche par compétition (voir
-// PINNACLE_SPORTS plus bas) -- les autres (rugby, handball, volley, boxe,
-// cyclisme, golf, snooker, fléchettes) sont soit bloqués côté API Pinnacle
-// (401 sans authentification), soit hors du modèle "équipe A vs équipe B".
+// PINNACLE_SPORTS plus bas). Cyclisme/golf/snooker/fléchettes restent hors-jeu
+// (modèle "outright", pas "équipe A vs équipe B"). Rugby et MMA/Boxe pointent
+// vers un groupe ambigu (AMBIGUOUS_SPORT_GROUPS) : Unibet ne distingue pas
+// Union/League, ni MMA/Boxe, sous un même libellé -- on essaie les deux.
 const PINNACLE_SPORT_KEY_BY_LABEL = {
 	Football: 'football',
 	Basketball: 'basketball',
 	Tennis: 'tennis',
 	Baseball: 'baseball',
 	'Hockey sur glace': 'hockey',
-	MMA: 'mma',
+	MMA: 'combat',
+	Boxe: 'combat',
+	Rugby: 'rugby',
+	Handball: 'handball',
+	Volleyball: 'volleyball',
 };
 
 function stripCbPrefix(label) {
@@ -301,10 +306,11 @@ async function sendTelegramMessage(env, text) {
 // Gère aussi les combos multi-matchs (paris sur plusieurs rencontres à la fois).
 // Silencieux si rien de fiable n'est trouvé.
 
-// Sports Pinnacle accessibles sans authentification via l'API "guest" publique
-// (vérifié empiriquement : handball, volleyball, rugby, boxe et cyclisme renvoient
-// tous 401 "No authorization token provided" sur ce endpoint -- probablement une
-// restriction de licence par sport, pas contournable côté client).
+// Sports Pinnacle accessibles via l'API "guest" publique -- handball, volley,
+// rugby, boxe et cyclisme renvoyaient 401 "No authorization token provided"
+// SANS les headers Referer/Origin pinnacle.com (voir PINNACLE_API_HEADERS) ;
+// avec, ils passent. Cyclisme/golf/snooker restent hors-jeu : modèle "outright
+// parmi N concurrents", pas "équipe A vs équipe B".
 const PINNACLE_SPORTS = {
 	football: 29, // "Soccer" chez Pinnacle -- ne pas confondre avec leur sport "Football" (NFL)
 	basketball: 4,
@@ -312,19 +318,33 @@ const PINNACLE_SPORTS = {
 	baseball: 3,
 	hockey: 19,
 	mma: 22,
+	boxing: 6,
+	handball: 18,
+	volleyball: 34,
+	rugbyUnion: 27,
+	rugbyLeague: 26,
+};
+
+// "Rugby" et "Combat" (MMA/Boxe) partagent un seul émoji/libellé générique côté
+// Unibet/Winamax -- impossible de savoir lequel sans essayer les deux.
+const AMBIGUOUS_SPORT_GROUPS = {
+	rugby: ['rugbyUnion', 'rugbyLeague'],
+	combat: ['mma', 'boxing'],
 };
 
 // Emoji en tête de l'eventName (posé par formatEventName / SPORT_EMOJI) -> sport
-// Pinnacle correspondant. Les sports absents (rugby, handball, volley, cyclisme,
-// golf, snooker, fléchettes) sont soit bloqués côté API, soit incompatibles avec
-// le modèle "équipe A vs équipe B" -- on les ignore silencieusement.
+// Pinnacle correspondant (ou groupe ambigu, voir ci-dessus). Cyclisme/golf/
+// snooker/fléchettes restent hors du modèle équipe A vs équipe B.
 const SPORT_KEY_BY_EMOJI = {
 	'⚽': 'football',
 	'🏀': 'basketball',
 	'🎾': 'tennis',
 	'⚾': 'baseball',
 	'🏒': 'hockey',
-	'🥊': 'mma',
+	'🥊': 'combat',
+	'🏉': 'rugby',
+	'🤾': 'handball',
+	'🏐': 'volleyball',
 };
 
 let leagueListCache = {};
@@ -462,10 +482,17 @@ async function computeDigestStats(env, date) {
 	return { count, withRef, best };
 }
 
+// Referer/Origin pinnacle.com : sans ça, l'API guest bloque certains sports en
+// 401 (handball, volley, rugby, boxe, cyclisme) -- un vrai navigateur les
+// envoie automatiquement, un fetch() brut non.
+const PINNACLE_API_HEADERS = {
+	'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+	Referer: 'https://www.pinnacle.com/',
+	Origin: 'https://www.pinnacle.com',
+};
+
 async function fetchLeagueData(leagueId) {
-	const headers = {
-		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-	};
+	const headers = PINNACLE_API_HEADERS;
 	const [matchupsRes, marketsRes] = await Promise.all([
 		fetch(`https://guest.api.arcadia.pinnacle.com/0.1/leagues/${leagueId}/matchups`, { headers }),
 		fetch(`https://guest.api.arcadia.pinnacle.com/0.1/leagues/${leagueId}/markets/straight`, { headers }),
@@ -487,9 +514,7 @@ async function fetchLeagueList(sportKey) {
 	}
 	try {
 		const res = await fetch(`https://guest.api.arcadia.pinnacle.com/0.1/sports/${sportId}/leagues`, {
-			headers: {
-				'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-			},
+			headers: PINNACLE_API_HEADERS,
 		});
 		if (!res.ok) return [];
 		const data = await res.json();
@@ -587,6 +612,27 @@ function findCombinedWinTotal(leagues, teamName, side, points) {
 			);
 			if (!part) continue;
 			const price = priceForParticipant(markets, m.id, part.id);
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+
+// Marché "Équipe To Win to Nil?" -- spécial dédié par équipe (Yes/No), avec
+// un suffixe " 1st Half" pour la variante 1ère mi-temps. Vérifié en direct
+// sur Kasimpasa-Trabzonspor : description exacte "Trabzonspor To Win to Nil?"
+// (ou "... To Win to Nil? 1st Half"), pas de calcul, prix Pinnacle direct.
+function findWinToNil(leagues, teamName, period = 0) {
+	const expectedSuffix = period === 1 ? ' To Win to Nil? 1st Half' : ' To Win to Nil?';
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			const desc = m.special?.description;
+			if (!desc || !desc.endsWith(expectedSuffix)) continue;
+			const teamPart = desc.slice(0, desc.length - expectedSuffix.length);
+			if (!teamsMatch(teamPart, teamName)) continue;
+			const yesPart = (m.participants || []).find((p) => p.name === 'Yes');
+			const price = yesPart ? priceForParticipant(markets, m.id, yesPart.id) : null;
 			if (price == null) continue;
 			return { league: league.name, decimal: americanToDecimal(price), exact: true };
 		}
@@ -917,6 +963,21 @@ function parseLegs(eventName, description, sportKey) {
 			},
 		];
 	}
+	// "TeamX gagne sans encaisser de but" -- marché spécial dédié "Team To Win
+	// to Nil?" (Yes/No), variante 1ère mi-temps si précisé.
+	const winToNilMatch =
+		winningTeam &&
+		d.match(/gagne\s+sans\s+encaisser\s+(?:de|un)\s+but(\s+en\s+(?:1ere|1ère|premiere|première)\s+mi-?temps)?\.?\s*$/i);
+	if (winToNilMatch) {
+		return [
+			{
+				type: 'winToNil',
+				team: winningTeam,
+				period: winToNilMatch[1] ? 1 : 0,
+				sport: sportKey,
+			},
+		];
+	}
 	// "TeamX gagne" ou "TeamX gagne le match", et RIEN d'autre après -- sinon
 	// c'est un marché différent ("gagne les deux mi-temps" par ex.) qui ne doit
 	// surtout pas être confondu avec la victoire simple : mieux vaut n'afficher
@@ -975,6 +1036,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'correctScore') {
 		return findCorrectScoreSum(leagues, leg.team, leg.opponent, leg.scoreLines);
+	}
+	if (leg.type === 'winToNil') {
+		return findWinToNil(leagues, leg.team, leg.period || 0);
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
@@ -1108,7 +1172,7 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 // identique quel que soit le sport essayé ; seul un sport qui matche vraiment
 // déclenche des appels réseau. Foot en premier : de loin le plus fréquent.
 async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
-	const sportsToTry = sportKey ? [sportKey] : Object.keys(PINNACLE_SPORTS);
+	const sportsToTry = sportKey ? AMBIGUOUS_SPORT_GROUPS[sportKey] || [sportKey] : Object.keys(PINNACLE_SPORTS);
 	for (const sport of sportsToTry) {
 		const ref = await findPinnacleReferenceForSport(eventName, description, leagueLabel, sport);
 		if (ref) return ref;
@@ -1288,6 +1352,52 @@ async function refreshTrackedPinnacleRefs(env) {
 	}
 }
 
+// Rattrapage ponctuel (déclenché à la main via /backfill-pinnacle quand
+// besoin -- pas un cron permanent) : applique la logique Pinnacle actuelle
+// aux cotes déjà actives, édite le message existant si déjà suivi.
+async function backfillPinnacleRefs(env) {
+	if (!env.MONITORING_CHAT_ID) return { checked: 0, updated: 0, sent: 0 };
+	const raw = await env.SEEN_BOOSTS.get('current_snapshot');
+	const boosts = raw ? JSON.parse(raw).boosts : [];
+	let updated = 0;
+	let sent = 0;
+	for (const boost of boosts) {
+		const trackKey = `pintrack:${boost.marketId}`;
+		try {
+			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
+			const refLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
+			if (!refLine) continue;
+
+			const existingRaw = await env.SEEN_BOOSTS.get(trackKey);
+			if (existingRaw) {
+				const tracked = JSON.parse(existingRaw);
+				if (refLine !== tracked.lastRefLine) {
+					await editMessageText(env, tracked.chatId, tracked.messageId, rebuildAddMessageText(boost, refLine));
+					tracked.lastRefLine = refLine;
+					tracked.boost = boost;
+					await env.SEEN_BOOSTS.put(trackKey, JSON.stringify(tracked), { expirationTtl: PIN_TRACK_TTL_SECONDS });
+					updated++;
+				}
+			} else {
+				const text = `📊 Référence Pinnacle (rattrapage) — ${boost.sportEmoji} ${boost.eventName}\n${boost.description}\n\n${refLine}`;
+				const sentMsg = await sendToChat(env, env.MONITORING_CHAT_ID, text);
+				if (sentMsg?.message_id) {
+					await env.SEEN_BOOSTS.put(
+						trackKey,
+						JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sentMsg.message_id, boost, lastRefLine: refLine }),
+						{ expirationTtl: PIN_TRACK_TTL_SECONDS }
+					);
+				}
+				sent++;
+			}
+		} catch (e) {
+			console.log('backfillPinnacleRefs failed for', boost.marketId, ':', String(e));
+		}
+		await new Promise((r) => setTimeout(r, 350));
+	}
+	return { checked: boosts.length, updated, sent };
+}
+
 async function checkAndPost(env) {
 	const res = await fetch(UNIBET_URL, {
 		headers: {
@@ -1345,6 +1455,10 @@ export default {
 			return new Response(raw || JSON.stringify({ updatedAt: null, boosts: [] }), {
 				headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
 			});
+		}
+		if (url.pathname === '/backfill-pinnacle') {
+			const result = await backfillPinnacleRefs(env);
+			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/digest-data') {
 			const date = url.searchParams.get('date') || todayKey();

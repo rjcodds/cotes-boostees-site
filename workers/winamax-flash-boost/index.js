@@ -31,16 +31,18 @@ function guessSportEmoji(title) {
 	return '⚡';
 }
 
-// Sports pour lesquels Pinnacle expose une recherche par compétition sans
-// authentification (voir PINNACLE_SPORTS plus bas) -- les autres (rugby,
-// handball, volley, boxe) sont bloqués côté API (401), donc ignorés ici.
+// "Rugby" et "Combat" (MMA/Boxe) partagent un seul émoji générique -- impossible
+// de savoir lequel sans essayer les deux (voir AMBIGUOUS_SPORT_GROUPS plus bas).
 const SPORT_KEY_BY_EMOJI = {
 	'⚽': 'football',
 	'🏀': 'basketball',
 	'🎾': 'tennis',
 	'⚾': 'baseball',
 	'🏒': 'hockey',
-	'🥊': 'mma',
+	'🥊': 'combat',
+	'🏉': 'rugby',
+	'🤾': 'handball',
+	'🏐': 'volleyball',
 };
 
 function formatOdd(n) {
@@ -181,10 +183,11 @@ async function sendTelegramMessage(env, text) {
 // Gère aussi les combos multi-matchs (paris sur plusieurs rencontres à la fois).
 // Silencieux si rien de fiable n'est trouvé.
 
-// Sports Pinnacle accessibles sans authentification via l'API "guest" publique
-// (vérifié empiriquement : handball, volleyball, rugby, boxe et cyclisme renvoient
-// tous 401 "No authorization token provided" sur ce endpoint -- probablement une
-// restriction de licence par sport, pas contournable côté client).
+// Sports Pinnacle accessibles via l'API "guest" publique -- handball, volley,
+// rugby, boxe et cyclisme renvoyaient 401 "No authorization token provided"
+// SANS les headers Referer/Origin pinnacle.com (voir PINNACLE_API_HEADERS) ;
+// avec, ils passent. Cyclisme/golf/snooker restent hors-jeu : modèle "outright
+// parmi N concurrents", pas "équipe A vs équipe B".
 const PINNACLE_SPORTS = {
 	football: 29, // "Soccer" chez Pinnacle -- ne pas confondre avec leur sport "Football" (NFL)
 	basketball: 4,
@@ -192,6 +195,27 @@ const PINNACLE_SPORTS = {
 	baseball: 3,
 	hockey: 19,
 	mma: 22,
+	boxing: 6,
+	handball: 18,
+	volleyball: 34,
+	rugbyUnion: 27,
+	rugbyLeague: 26,
+};
+
+// "Rugby" et "Combat" (MMA/Boxe) partagent un seul émoji générique côté
+// Unibet/Winamax -- impossible de savoir lequel sans essayer les deux.
+const AMBIGUOUS_SPORT_GROUPS = {
+	rugby: ['rugbyUnion', 'rugbyLeague'],
+	combat: ['mma', 'boxing'],
+};
+
+// Referer/Origin pinnacle.com : sans ça, l'API guest bloque certains sports en
+// 401 (handball, volley, rugby, boxe, cyclisme) -- un vrai navigateur les
+// envoie automatiquement, un fetch() brut non.
+const PINNACLE_API_HEADERS = {
+	'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+	Referer: 'https://www.pinnacle.com/',
+	Origin: 'https://www.pinnacle.com',
 };
 
 // Compétitions continentales -> pas de préfixe pays chez Pinnacle (elles sont
@@ -397,9 +421,7 @@ async function postDailyDigest(env) {
 }
 
 async function fetchLeagueData(leagueId) {
-	const headers = {
-		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-	};
+	const headers = PINNACLE_API_HEADERS;
 	const [matchupsRes, marketsRes] = await Promise.all([
 		fetch(`https://guest.api.arcadia.pinnacle.com/0.1/leagues/${leagueId}/matchups`, { headers }),
 		fetch(`https://guest.api.arcadia.pinnacle.com/0.1/leagues/${leagueId}/markets/straight`, { headers }),
@@ -423,9 +445,7 @@ async function fetchLeagueList(sportKey) {
 	}
 	try {
 		const res = await fetch(`https://guest.api.arcadia.pinnacle.com/0.1/sports/${sportId}/leagues`, {
-			headers: {
-				'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-			},
+			headers: PINNACLE_API_HEADERS,
 		});
 		if (!res.ok) return [];
 		const data = await res.json();
@@ -513,6 +533,27 @@ function findCombinedWinTotal(leagues, teamName, side, points) {
 			);
 			if (!part) continue;
 			const price = priceForParticipant(markets, m.id, part.id);
+			if (price == null) continue;
+			return { league: league.name, decimal: americanToDecimal(price), exact: true };
+		}
+	}
+	return null;
+}
+
+// Marché "Équipe To Win to Nil?" -- spécial dédié par équipe (Yes/No), avec
+// un suffixe " 1st Half" pour la variante 1ère mi-temps. Vérifié en direct
+// sur Kasimpasa-Trabzonspor : description exacte "Trabzonspor To Win to Nil?"
+// (ou "... To Win to Nil? 1st Half"), pas de calcul, prix Pinnacle direct.
+function findWinToNil(leagues, teamName, period = 0) {
+	const expectedSuffix = period === 1 ? ' To Win to Nil? 1st Half' : ' To Win to Nil?';
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			const desc = m.special?.description;
+			if (!desc || !desc.endsWith(expectedSuffix)) continue;
+			const teamPart = desc.slice(0, desc.length - expectedSuffix.length);
+			if (!teamsMatch(teamPart, teamName)) continue;
+			const yesPart = (m.participants || []).find((p) => p.name === 'Yes');
+			const price = yesPart ? priceForParticipant(markets, m.id, yesPart.id) : null;
 			if (price == null) continue;
 			return { league: league.name, decimal: americanToDecimal(price), exact: true };
 		}
@@ -843,6 +884,21 @@ function parseLegs(eventName, description, sportKey) {
 			},
 		];
 	}
+	// "TeamX gagne sans encaisser de but" -- marché spécial dédié "Team To Win
+	// to Nil?" (Yes/No), variante 1ère mi-temps si précisé.
+	const winToNilMatch =
+		winningTeam &&
+		d.match(/gagne\s+sans\s+encaisser\s+(?:de|un)\s+but(\s+en\s+(?:1ere|1ère|premiere|première)\s+mi-?temps)?\.?\s*$/i);
+	if (winToNilMatch) {
+		return [
+			{
+				type: 'winToNil',
+				team: winningTeam,
+				period: winToNilMatch[1] ? 1 : 0,
+				sport: sportKey,
+			},
+		];
+	}
 	// "TeamX gagne" ou "TeamX gagne le match", et RIEN d'autre après -- sinon
 	// c'est un marché différent ("gagne les deux mi-temps" par ex.) qui ne doit
 	// surtout pas être confondu avec la victoire simple : mieux vaut n'afficher
@@ -901,6 +957,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'correctScore') {
 		return findCorrectScoreSum(leagues, leg.team, leg.opponent, leg.scoreLines);
+	}
+	if (leg.type === 'winToNil') {
+		return findWinToNil(leagues, leg.team, leg.period || 0);
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
@@ -1034,7 +1093,7 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 // que soit le sport essayé ; seul un sport qui matche vraiment déclenche des
 // appels réseau. Foot en premier : de loin le plus fréquent.
 async function findPinnacleReference(eventName, description, leagueLabel, sportKey) {
-	const sportsToTry = sportKey ? [sportKey] : Object.keys(PINNACLE_SPORTS);
+	const sportsToTry = sportKey ? AMBIGUOUS_SPORT_GROUPS[sportKey] || [sportKey] : Object.keys(PINNACLE_SPORTS);
 	for (const sport of sportsToTry) {
 		const ref = await findPinnacleReferenceForSport(eventName, description, leagueLabel, sport);
 		if (ref) return ref;
