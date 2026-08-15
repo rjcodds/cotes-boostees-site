@@ -1853,6 +1853,19 @@ async function formatMonitoringMessage(event) {
 		} catch {
 			// silencieux : pas de reference dispo ne doit jamais bloquer l'alerte
 		}
+		// Référence exchange (Piwi247/Betfair) en complément de Pinnacle, usage
+		// perso uniquement -- jamais republiée aux abonnés (canal monitoring
+		// privé seulement). Ne doit jamais bloquer l'alerte non plus.
+		try {
+			const teams = splitTeams(boost.eventName);
+			if (teams) {
+				const piwiRef = await findPiwiReference(teams[0], teams[1]);
+				const piwiLine = formatPiwiReference(piwiRef);
+				if (piwiLine) lines.push(piwiLine);
+			}
+		} catch {
+			// silencieux
+		}
 	}
 
 	return { text: lines.join('\n'), refLine, edge };
@@ -2084,6 +2097,143 @@ async function backfillPinnacleRefs(env) {
 	return { checked: boosts.length, updated, sent };
 }
 
+// --- Piwi247 (Betfair Exchange en marque blanche) : référence exchange en
+// complément de Pinnacle, usage strictement personnel (jamais republié aux
+// abonnés). Contrairement à Pinnacle, les cotes live passent uniquement par
+// un WebSocket (pas de REST), avec un mini-protocole SockJS custom -- reverse
+// engineered en capturant le trafic réel du site (pas de documentation
+// publique). Aucune authentification requise, vérifié en direct.
+const PIWI_HEADERS = {
+	'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+	Origin: 'https://www.piwi247.com',
+	Referer: 'https://www.piwi247.com/',
+};
+
+function randomPiwiSocketPath() {
+	const serverId = String(Math.floor(Math.random() * 900) + 100);
+	const sessionId = Array.from({ length: 12 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+	return `${serverId}/${sessionId}`;
+}
+
+// Ouvre le WebSocket "multiple-market-prices", s'abonne au marché demandé, et
+// renvoie le premier instantané de prix reçu (contient déjà les cotes back/lay
+// courantes -- pas besoin d'attendre une mise à jour). Ferme la connexion
+// aussitôt après : usage ponctuel de référence, pas un flux permanent.
+async function fetchPiwiMarketPrices(marketId, eventId) {
+	const url = `https://exch.piwi247.com/customer/ws/multiple-market-prices/${randomPiwiSocketPath()}/websocket`;
+	let res;
+	try {
+		res = await fetch(url, { headers: { ...PIWI_HEADERS, Upgrade: 'websocket' } });
+	} catch (e) {
+		console.log('fetchPiwiMarketPrices: fetch failed', String(e));
+		return null;
+	}
+	const ws = res.webSocket;
+	if (!ws) {
+		console.log('fetchPiwiMarketPrices: no webSocket on response, status', res.status);
+		return null;
+	}
+	ws.accept();
+
+	return new Promise((resolve) => {
+		let done = false;
+		const finish = (value) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			try {
+				ws.close();
+			} catch {}
+			resolve(value);
+		};
+		const timer = setTimeout(() => finish(null), 8000);
+
+		ws.addEventListener('message', (evt) => {
+			const data = typeof evt.data === 'string' ? evt.data : '';
+			if (data === 'o') {
+				ws.send(JSON.stringify([JSON.stringify([{ applicationType: 'WEB' }])]));
+				ws.send(JSON.stringify([JSON.stringify([{ marketId, eventId, applicationType: 'WEB' }])]));
+				return;
+			}
+			if (data.startsWith('a[')) {
+				try {
+					const outer = JSON.parse(data.slice(1));
+					const inner = JSON.parse(outer[0]);
+					finish(inner);
+				} catch (e) {
+					console.log('fetchPiwiMarketPrices: parse error', String(e));
+					finish(null);
+				}
+			}
+		});
+		ws.addEventListener('close', () => finish(null));
+		ws.addEventListener('error', () => finish(null));
+	});
+}
+
+// Découverte du marché "Match Odds" par noms d'équipe -- limitée pour
+// l'instant à /customer/api/popular (grands événements du moment). La
+// recherche complète (toutes compétitions, tous horaires) exige un jeton
+// x-csrf-token sur l'endpoint POST correspondant, pas encore reverse-
+// engineered -- si le match n'y figure pas, silencieux comme pour tout
+// marché introuvable.
+async function findPiwiMatchOddsMarket(teamA, teamB) {
+	let events;
+	try {
+		const res = await fetch('https://exch.piwi247.com/customer/api/popular', { headers: PIWI_HEADERS });
+		if (!res.ok) return null;
+		events = await res.json();
+	} catch {
+		return null;
+	}
+	const match = (events || []).find((e) => {
+		if (e.type !== 'EVENT' || !e.name?.includes(' v ')) return false;
+		const [n1, n2] = e.name.split(' v ');
+		return (teamsMatch(n1, teamA) && teamsMatch(n2, teamB)) || (teamsMatch(n1, teamB) && teamsMatch(n2, teamA));
+	});
+	if (!match) return null;
+	try {
+		const res = await fetch(`https://exch.piwi247.com/customer/api/event/${match.id}`, { headers: PIWI_HEADERS });
+		if (!res.ok) return null;
+		const detail = await res.json();
+		const marketOdds = (detail.children || []).find((c) => c.type === 'MARKET' && c.name === 'Match Odds');
+		if (!marketOdds) return null;
+		return { marketId: marketOdds.id, eventId: match.id };
+	} catch {
+		return null;
+	}
+}
+
+// Combine découverte + noms des participants (REST) + prix live (WebSocket)
+// -- deux appels séparés car le flux WebSocket ne porte que les
+// selectionId, pas les noms.
+async function findPiwiReference(teamA, teamB) {
+	const found = await findPiwiMatchOddsMarket(teamA, teamB);
+	if (!found) return null;
+	let runnerNames;
+	try {
+		const res = await fetch(`https://exch.piwi247.com/customer/api/market/${found.marketId}`, { headers: PIWI_HEADERS });
+		if (!res.ok) return null;
+		const detail = await res.json();
+		runnerNames = new Map((detail.runners || []).map((r) => [r.selectionId, r.runnerName]));
+	} catch {
+		return null;
+	}
+	const prices = await fetchPiwiMarketPrices(found.marketId, found.eventId);
+	if (!prices?.rc?.length) return null;
+	const runners = prices.rc
+		.map((r) => ({ name: runnerNames.get(r.id), back: r.bdatb?.[0]?.odds }))
+		.filter((r) => r.name && r.back);
+	if (!runners.length) return null;
+	return { runners };
+}
+
+function formatPiwiReference(piwiRef) {
+	if (!piwiRef) return null;
+	const parts = piwiRef.runners.map((r) => `${r.name} : ${Number(r.back).toFixed(2)}`);
+	return `♟️ Exchange (Piwi247, perso) : ${parts.join(' · ')}`;
+}
+
 async function checkAndPost(env) {
 	const state = await fetchPreloadedState(env);
 	const boosts = parseBoosts(state);
@@ -2139,6 +2289,20 @@ export default {
 		if (url.pathname === '/backfill-pinnacle') {
 			const result = await backfillPinnacleRefs(env);
 			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-piwi') {
+			const marketId = url.searchParams.get('marketId');
+			const eventId = url.searchParams.get('eventId');
+			if (!marketId || !eventId) return new Response('usage: ?marketId=X&eventId=Y', { status: 400 });
+			const result = await fetchPiwiMarketPrices(marketId, eventId);
+			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-piwi-teams') {
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB', { status: 400 });
+			const ref = await findPiwiReference(a, b);
+			return new Response(JSON.stringify({ ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
 		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
