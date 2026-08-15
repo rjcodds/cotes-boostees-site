@@ -718,6 +718,35 @@ function findBtts(leagues, teamA, teamB, period = 0) {
 	return null;
 }
 
+// Marché "Player Props" (catégorie "Player Props" chez Pinnacle) -- "{Joueur}
+// Total {Stat}" en Over/Under avec une ligne (prices[].points), pas un simple
+// Yes/No. Contrairement aux marchés par équipe, la ligne Pinnacle est fixée
+// par le marché lui-même (ex: 25.5) et doit correspondre EXACTEMENT au seuil
+// annoncé dans le boost -- sinon ce n'est pas la même cote et on n'affiche
+// rien plutôt que de comparer deux seuils différents. Vérifié en direct sur
+// un match WNBA (seul sport où ces props existent via l'API guest -- aucun
+// équivalent trouvé pour le foot, voir l'audit dans le commit correspondant).
+function findPlayerProp(leagues, playerName, statLabel, side, threshold) {
+	const suffix = ` Total ${statLabel}`;
+	const wantLabel = side === 'over' ? 'Over' : 'Under';
+	for (const { league, matchups, markets } of leagues) {
+		for (const m of matchups) {
+			if (m.special?.category !== 'Player Props') continue;
+			const desc = m.special?.description;
+			if (!desc || !desc.endsWith(suffix)) continue;
+			const namePart = desc.slice(0, desc.length - suffix.length);
+			if (!namePart || !teamsMatch(namePart, playerName)) continue;
+			const part = (m.participants || []).find((p) => p.name === wantLabel);
+			if (!part) continue;
+			const mk = markets.find((mk) => mk.matchupId === m.id);
+			const priceEntry = mk?.prices?.find((pr) => pr.participantId === part.id);
+			if (!priceEntry || Math.abs((priceEntry.points ?? NaN) - threshold) > 0.01) continue;
+			return { league: league.name, decimal: americanToDecimal(priceEntry.price), exact: true };
+		}
+	}
+	return null;
+}
+
 // Marché "Équipe By N" / "Équipe By N+" (marge de victoire) -- somme les
 // probabilités de toutes les marges >= au seuil demandé. Exact (pas d'approximation).
 // BUG corrigé : "Winning Margin" et "Winning Margin 1st Half" produisent des
@@ -989,6 +1018,38 @@ function parseLegs(eventName, description, sportKey) {
 
 	const isFirstHalf = /(?:1ere|1ère|premiere|première)\s+mi-?temps/i.test(d);
 
+	// Props joueur (basket uniquement -- seul sport où ces marchés existent
+	// via l'API guest, voir findPlayerProp). Le nom capturé n'est PAS comparé
+	// à teamA/teamB (c'est un joueur, pas une équipe) -- confiance dans
+	// teamsMatch pour absorber les variantes d'écriture ("A. Fils" etc.),
+	// comme déjà fait pour les "équipes" tennis.
+	const playerPointsMatch = d.match(/^(.+?)\s+inscrit\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*points?\.?\s*$/i);
+	const playerReboundsMatch = d.match(/^(.+?)\s+(?:prend|capte)\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*rebonds?\.?\s*$/i);
+	const playerAssistsMatch = d.match(
+		/^(.+?)\s+(?:d[eé]livre|distribue)\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*passes?(?:\s+d[ée]cisives?)?\.?\s*$/i
+	);
+	const playerThreesMatch = d.match(
+		/^(.+?)\s+(?:r[eé]ussit|marque)\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*(?:paniers?\s+(?:a|à)\s*3(?:\s*points?)?|3\s*[- ]?points?|tirs?\s+(?:a|à)\s*3(?:\s*points?)?)\.?\s*$/i
+	);
+	const playerPropMatch =
+		(playerPointsMatch && ['Points', playerPointsMatch]) ||
+		(playerReboundsMatch && ['Rebounds', playerReboundsMatch]) ||
+		(playerAssistsMatch && ['Assists', playerAssistsMatch]) ||
+		(playerThreesMatch && ['Threes Made', playerThreesMatch]);
+	if (playerPropMatch) {
+		const [statLabel, m] = playerPropMatch;
+		return [
+			{
+				type: 'playerProp',
+				player: m[1].trim(),
+				statLabel,
+				side: /plus/i.test(m[2]) ? 'over' : 'under',
+				threshold: parseFloat(m[3].replace(',', '.')),
+				sport: sportKey,
+			},
+		];
+	}
+
 	// "Les 2/deux équipes marquent" (même match, pas de combo multi-matchs --
 	// déjà géré plus haut) -- marché Pinnacle direct "Both Teams To Score?".
 	if (/les\s+(?:2|deux)\s+equipes\s+marquent\b/i.test(d)) {
@@ -1248,6 +1309,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'teamGoalsOddEven') {
 		return findTeamGoalsOddEven(leagues, leg.team, leg.label);
+	}
+	if (leg.type === 'playerProp') {
+		return findPlayerProp(leagues, leg.player, leg.statLabel, leg.side, leg.threshold);
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
