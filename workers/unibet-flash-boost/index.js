@@ -1190,6 +1190,36 @@ export default {
 			const stats = await computeDigestStats(env, date);
 			return new Response(JSON.stringify(stats), { headers: { 'Content-Type': 'application/json' } });
 		}
+		if (url.pathname === '/telegram-webhook' && request.method === 'POST') {
+			// Vérifie que la requête vient bien de Telegram (secret configuré via
+			// setWebhook), pas d'un tiers qui aurait deviné l'URL.
+			if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== env.TELEGRAM_WEBHOOK_SECRET) {
+				return new Response('Forbidden', { status: 403 });
+			}
+			const update = await request.json().catch(() => null);
+			const msg = update?.message || update?.channel_post;
+			const text = (msg?.text || '').trim();
+			// Réservé à l'usage perso (canal privé de monitoring) -- pas une
+			// commande publique, on ignore tout le reste silencieusement.
+			if (msg && String(msg.chat?.id) === String(env.MONITORING_CHAT_ID) && /^\/check\b/i.test(text)) {
+				const args = text.replace(/^\/check\s*/i, '').trim();
+				const teams = splitTeams(args);
+				let reply;
+				if (!teams) {
+					reply = 'Format : /check Équipe1 - Équipe2';
+				} else {
+					const [teamA, teamB] = teams;
+					try {
+						const ref = await findPinnacleReference(`${teamA} - ${teamB}`, 'Résultat du match', null, null);
+						reply = formatPinnacleReference(ref, null) || `Aucune référence Pinnacle trouvée pour ${teamA} - ${teamB}.`;
+					} catch (e) {
+						reply = `Erreur pendant la recherche : ${String(e)}`;
+					}
+				}
+				await sendToChat(env, msg.chat.id, reply);
+			}
+			return new Response('OK', { status: 200 });
+		}
 		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
 
