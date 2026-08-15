@@ -797,6 +797,101 @@ function findBtts(leagues, teamA, teamB, period = 0) {
 	return null;
 }
 
+// Marché "Both Teams To Score/Total Goals" -- combo direct Pinnacle ("Yes &
+// Over/Under X.Y"), pas une multiplication : BTTS et Total ne sont pas
+// indépendants (marquer des deux côtés corrèle avec le nombre de buts), donc
+// le prix combiné publié par Pinnacle est la seule source fiable ici.
+function findBttsAndTotal(leagues, teamA, teamB, side, points) {
+	const wantLabel = `Yes & ${side === 'over' ? 'Over' : 'Under'} ${points}`;
+	for (const { league, matchups, markets } of leagues) {
+		const parent = matchups.find(
+			(m) =>
+				!m.parentId &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!parent) continue;
+		const special = matchups.find((s) => s.parentId === parent.id && s.special?.description === 'Both Teams To Score/Total Goals');
+		const part = special?.participants?.find((p) => p.name === wantLabel);
+		const price = part ? priceForParticipant(markets, special.id, part.id) : null;
+		if (price == null) continue;
+		return { league: league.name, decimal: americanToDecimal(price), exact: true };
+	}
+	return null;
+}
+
+// Marché "Odd/Even / Total Goals" -- même logique combo directe que
+// findBttsAndTotal, pas lié à une équipe (pair/impair du match entier).
+function findOddEvenAndTotal(leagues, teamA, teamB, label, side, points) {
+	const wantLabel = `${label} & ${side === 'over' ? 'Over' : 'Under'} ${points}`;
+	for (const { league, matchups, markets } of leagues) {
+		const parent = matchups.find(
+			(m) =>
+				!m.parentId &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!parent) continue;
+		const special = matchups.find((s) => s.parentId === parent.id && s.special?.description === 'Odd/Even / Total Goals');
+		const part = special?.participants?.find((p) => p.name === wantLabel);
+		const price = part ? priceForParticipant(markets, special.id, part.id) : null;
+		if (price == null) continue;
+		return { league: league.name, decimal: americanToDecimal(price), exact: true };
+	}
+	return null;
+}
+
+// Marché "Half-Time/Full-Time" -- combo direct Pinnacle, participant "{HT} -
+// {FT}" où chaque côté est un nom d'équipe ou "Draw". htOutcome/ftOutcome
+// valent soit un nom d'équipe, soit la chaîne littérale 'Draw'.
+function findHalfTimeFullTime(leagues, teamA, teamB, htOutcome, ftOutcome) {
+	for (const { league, matchups, markets } of leagues) {
+		const parent = matchups.find(
+			(m) =>
+				!m.parentId &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!parent) continue;
+		const special = matchups.find((s) => s.parentId === parent.id && s.special?.description === 'Half-Time/Full-Time');
+		const part = special?.participants?.find((p) => {
+			const mm = (p.name || '').match(/^(.+?)\s+-\s+(.+)$/);
+			if (!mm) return false;
+			const [, ht, ft] = mm;
+			const htOk = htOutcome === 'Draw' ? ht === 'Draw' : teamsMatch(ht, htOutcome);
+			const ftOk = ftOutcome === 'Draw' ? ft === 'Draw' : teamsMatch(ft, ftOutcome);
+			return htOk && ftOk;
+		});
+		const price = part ? priceForParticipant(markets, special.id, part.id) : null;
+		if (price == null) continue;
+		return { league: league.name, decimal: americanToDecimal(price), exact: true };
+	}
+	return null;
+}
+
+// Approximation ÉTIQUETÉE (exact:false), à la demande explicite : "Double
+// Chance" combiné à un Total ou un BTTS n'existe PAS comme marché direct
+// chez Pinnacle -- vérifié sur plusieurs championnats (La Liga, Süper Lig)
+// en inspectant le catalogue complet de marchés d'un vrai match. On
+// multiplie donc deux marchés indépendants publiés séparément, ce qui n'est
+// PAS statistiquement exact ("TeamX ou nul" corrèle avec le nombre de buts),
+// d'où exact:false -- formatPinnacleReference affiche un avertissement.
+function findDoubleChanceAndTotalApprox(leagues, teamName, side, teamA, teamB, totalSide, points) {
+	const dc = findDoubleChance(leagues, teamName, side, 0);
+	const total = findTotal(leagues, teamA, teamB, totalSide, points);
+	if (!dc || !total) return null;
+	return { league: dc.league, decimal: dc.decimal * total.decimal, exact: false };
+}
+function findDoubleChanceAndBttsApprox(leagues, teamName, side, teamA, teamB) {
+	const dc = findDoubleChance(leagues, teamName, side, 0);
+	const btts = findBtts(leagues, teamA, teamB, 0);
+	if (!dc || !btts) return null;
+	return { league: dc.league, decimal: dc.decimal * btts.decimal, exact: false };
+}
+
 // Marché "Player Props" (catégorie "Player Props" chez Pinnacle) -- "{Joueur}
 // Total {Stat}" en Over/Under avec une ligne (prices[].points), pas un simple
 // Yes/No. Contrairement aux marchés par équipe, la ligne Pinnacle est fixée
@@ -1129,6 +1224,148 @@ function parseLegs(eventName, description, sportKey) {
 		];
 	}
 
+	// --- Marchés combinés (vérifiés avant leurs variantes simples ci-dessous,
+	// certaines n'étant pas ancrées en fin de chaîne et voleraient sinon le
+	// combo pour ne renvoyer que la moitié de la condition) ---
+
+	// "Les 2 équipes marquent et plus/moins de N buts" -- marché Pinnacle
+	// direct "Both Teams To Score/Total Goals".
+	const bttsAndTotalMatch = d.match(
+		/les\s+(?:2|deux)\s+equipes\s+marquent\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i
+	);
+	if (bttsAndTotalMatch) {
+		return [
+			{
+				type: 'bttsAndTotal',
+				teamA,
+				teamB,
+				side: /plus/i.test(bttsAndTotalMatch[1]) ? 'over' : 'under',
+				points: parseFloat(bttsAndTotalMatch[2].replace(',', '.')),
+				sport: sportKey,
+			},
+		];
+	}
+
+	// "Nombre/total de buts pair/impair et plus/moins de N buts" -- marché
+	// Pinnacle direct "Odd/Even / Total Goals".
+	const oddEvenAndTotalMatch = d.match(
+		/(?:nombre|total)\s+(?:de\s+)?buts?\s+(impair|pair)\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i
+	);
+	if (oddEvenAndTotalMatch) {
+		return [
+			{
+				type: 'oddEvenAndTotal',
+				teamA,
+				teamB,
+				label: /impair/i.test(oddEvenAndTotalMatch[1]) ? 'Odd' : 'Even',
+				side: /plus/i.test(oddEvenAndTotalMatch[2]) ? 'over' : 'under',
+				points: parseFloat(oddEvenAndTotalMatch[3].replace(',', '.')),
+				sport: sportKey,
+			},
+		];
+	}
+
+	// "TeamX ou match nul et plus/moins de N buts" / "Match nul ou TeamY et
+	// plus/moins de N buts" -- APPROXIMATION étiquetée (pas de marché direct
+	// Pinnacle, voir findDoubleChanceAndTotalApprox).
+	const dcTeamAndTotalMatch =
+		d.match(/^(.+?)\s+ou\s+(?:le\s+)?match\s+nul\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i) ||
+		d.match(/^double\s+chance\s*:?\s*(.+?)\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i);
+	if (dcTeamAndTotalMatch) {
+		const cand = dcTeamAndTotalMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [
+				{
+					type: 'doubleChanceAndTotal',
+					team,
+					side: 'teamOrDraw',
+					teamA,
+					teamB,
+					totalSide: /plus/i.test(dcTeamAndTotalMatch[2]) ? 'over' : 'under',
+					points: parseFloat(dcTeamAndTotalMatch[3].replace(',', '.')),
+					sport: sportKey,
+				},
+			];
+		}
+	}
+	const dcDrawAndTotalMatch = d.match(
+		/^(?:le\s+)?match\s+nul\s+ou\s+(.+?)\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i
+	);
+	if (dcDrawAndTotalMatch) {
+		const cand = dcDrawAndTotalMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [
+				{
+					type: 'doubleChanceAndTotal',
+					team,
+					side: 'drawOrTeam',
+					teamA,
+					teamB,
+					totalSide: /plus/i.test(dcDrawAndTotalMatch[2]) ? 'over' : 'under',
+					points: parseFloat(dcDrawAndTotalMatch[3].replace(',', '.')),
+					sport: sportKey,
+				},
+			];
+		}
+	}
+
+	// "TeamX ou match nul et les deux équipes marquent" / "Match nul ou TeamY
+	// et les deux équipes marquent" -- APPROXIMATION étiquetée (idem, voir
+	// findDoubleChanceAndBttsApprox).
+	const dcTeamAndBttsMatch =
+		d.match(/^(.+?)\s+ou\s+(?:le\s+)?match\s+nul\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i) ||
+		d.match(/^double\s+chance\s*:?\s*(.+?)\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i);
+	if (dcTeamAndBttsMatch) {
+		const cand = dcTeamAndBttsMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'doubleChanceAndBtts', team, side: 'teamOrDraw', teamA, teamB, sport: sportKey }];
+	}
+	const dcDrawAndBttsMatch = d.match(
+		/^(?:le\s+)?match\s+nul\s+ou\s+(.+?)\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i
+	);
+	if (dcDrawAndBttsMatch) {
+		const cand = dcDrawAndBttsMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'doubleChanceAndBtts', team, side: 'drawOrTeam', teamA, teamB, sport: sportKey }];
+	}
+
+	// "TeamX mène à la mi-temps et gagne le match" (même équipe aux deux
+	// bouts) / "...et TeamY gagne le match" (équipes différentes) / "Match nul
+	// à la mi-temps et TeamX gagne le match" / "TeamX mène à la mi-temps et
+	// match nul (à la fin)" -- marché Pinnacle direct "Half-Time/Full-Time".
+	const htftSameTeamMatch = d.match(/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
+	const htftDrawAtHalfMatch = d.match(
+		/^match\s+nul\s+[aà]\s+la\s+mi-?temps\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i
+	);
+	const htftDrawAtFullMatch = d.match(
+		/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+(?:le\s+match\s+se\s+termine\s+sur\s+un\s+)?match\s+nul(?:\s+[aà]\s+la\s+fin)?\.?\s*$/i
+	);
+	const htftTwoTeamsMatch = d.match(/^(.+?)\s+m[eè]ne\s+[aà]\s+la\s+mi-?temps\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
+	if (htftSameTeamMatch) {
+		const cand = htftSameTeamMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'htft', htOutcome: team, ftOutcome: team, teamA, teamB, sport: sportKey }];
+	}
+	if (htftDrawAtHalfMatch) {
+		const cand = htftDrawAtHalfMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'htft', htOutcome: 'Draw', ftOutcome: team, teamA, teamB, sport: sportKey }];
+	}
+	if (htftDrawAtFullMatch) {
+		const cand = htftDrawAtFullMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) return [{ type: 'htft', htOutcome: team, ftOutcome: 'Draw', teamA, teamB, sport: sportKey }];
+	}
+	if (htftTwoTeamsMatch) {
+		const candHt = htftTwoTeamsMatch[1].trim();
+		const candFt = htftTwoTeamsMatch[2].trim();
+		const htTeam = isExactlyTeamName(teamA, candHt) ? teamA : isExactlyTeamName(teamB, candHt) ? teamB : null;
+		const ftTeam = isExactlyTeamName(teamA, candFt) ? teamA : isExactlyTeamName(teamB, candFt) ? teamB : null;
+		if (htTeam && ftTeam) return [{ type: 'htft', htOutcome: htTeam, ftOutcome: ftTeam, teamA, teamB, sport: sportKey }];
+	}
+
 	// "Les 2/deux équipes marquent" (même match, pas de combo multi-matchs --
 	// déjà géré plus haut) -- marché Pinnacle direct "Both Teams To Score?".
 	if (/les\s+(?:2|deux)\s+equipes\s+marquent\b/i.test(d)) {
@@ -1392,6 +1629,21 @@ async function resolveLeg(leg, leagueData) {
 	if (leg.type === 'playerProp') {
 		return findPlayerProp(leagues, leg.player, leg.statLabel, leg.side, leg.threshold);
 	}
+	if (leg.type === 'bttsAndTotal') {
+		return findBttsAndTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points);
+	}
+	if (leg.type === 'oddEvenAndTotal') {
+		return findOddEvenAndTotal(leagues, leg.teamA, leg.teamB, leg.label, leg.side, leg.points);
+	}
+	if (leg.type === 'doubleChanceAndTotal') {
+		return findDoubleChanceAndTotalApprox(leagues, leg.team, leg.side, leg.teamA, leg.teamB, leg.totalSide, leg.points);
+	}
+	if (leg.type === 'doubleChanceAndBtts') {
+		return findDoubleChanceAndBttsApprox(leagues, leg.team, leg.side, leg.teamA, leg.teamB);
+	}
+	if (leg.type === 'htft') {
+		return findHalfTimeFullTime(leagues, leg.teamA, leg.teamB, leg.htOutcome, leg.ftOutcome);
+	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
 	}
@@ -1555,7 +1807,12 @@ function formatPinnacleReference(ref, boostDecimal) {
 		return line;
 	}
 	if (ref.type === 'single') {
-		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}${edgeSuffix(boostDecimal, ref.decimal)}`;
+		// exact:false = approximation étiquetée (ex: Double Chance x Total/BTTS,
+		// marché combiné inexistant chez Pinnacle -- deux marchés indépendants
+		// multipliés, corrélation réelle non prise en compte, voir
+		// findDoubleChanceAndTotalApprox).
+		const approxTag = ref.exact === false ? ' ⚠️ approximatif (corrélation non prise en compte)' : '';
+		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}${approxTag}${edgeSuffix(boostDecimal, ref.decimal)}`;
 	}
 	if (ref.type === 'combo') {
 		const breakdown = ref.legs.map((l) => `${l.label} : ${l.decimal.toFixed(2)}`).join('\n');
