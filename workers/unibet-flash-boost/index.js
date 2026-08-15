@@ -1464,9 +1464,12 @@ function parseLegs(eventName, description, sportKey) {
 	const marginMatch =
 		d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i) ||
 		d.match(/gagne\s+par\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?)(?:\s+d.ecart)?/i);
+	// "TeamX gagne le match 1-0, 2-0 ou 3-0" ET "TeamX gagne 1:0, 2:0 ou 3:0"
+	// sont deux formulations réelles vues sur Unibet -- "le match" est
+	// optionnel, le séparateur de score est soit "-" soit ":" (bug trouvé sur
+	// un vrai boost Alaves qui utilisait la forme courte + les deux-points).
 	const correctScoreMatch =
-		winningTeam &&
-		d.match(/gagne\s+le\s+match\s+((?:\d+\s*-\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*-\s*\d+)\.?\s*$/i);
+		winningTeam && d.match(/gagne\s+(?:le\s+match\s+)?((?:\d+\s*[:-]\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*[:-]\s*\d+)\.?\s*$/i);
 
 	if (winningTeam && totalMatch) {
 		return [
@@ -1507,7 +1510,7 @@ function parseLegs(eventName, description, sportKey) {
 	if (correctScoreMatch) {
 		// "TeamX gagne le match A-B, C-D ou E-F" -- somme exacte des scores exacts
 		// concernés via le marché "Correct Score" de Pinnacle.
-		const scoreLines = [...correctScoreMatch[1].matchAll(/(\d+)\s*-\s*(\d+)/g)].map((m) => [
+		const scoreLines = [...correctScoreMatch[1].matchAll(/(\d+)\s*[:-]\s*(\d+)/g)].map((m) => [
 			parseInt(m[1], 10),
 			parseInt(m[2], 10),
 		]);
