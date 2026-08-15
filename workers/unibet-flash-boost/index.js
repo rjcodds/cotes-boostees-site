@@ -1484,15 +1484,27 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'exactTotalGoals', n: parseInt(exactTotalGoalsMatch[1], 10), period: isFirstHalf ? 1 : 0, sport: sportKey }];
 	}
 
+	// "{Joueur} buteur" -- marché Piwi direct "Player To Score" (aucun
+	// équivalent Pinnacle, voir la découverte du 2026-08-15 : Pinnacle n'a
+	// aucun marché buteur par match pour le foot, seulement un "Top
+	// Goalscorer" sur la saison entière).
+	const playerScorerMatch = d.match(/^(.+?)\s+buteur\.?\s*$/i);
+	if (playerScorerMatch) {
+		return [{ type: 'playerScorer', player: playerScorerMatch[1].trim(), sport: sportKey }];
+	}
+
 	// "TeamX marque" (au moins une fois), bare -- marché Pinnacle direct
 	// "TeamX To Score?". Vérifié en dernier parmi les marchés "marque" : les
 	// variantes plus spécifiques ("en premier", "exactement N buts") sont
-	// déjà retournées plus haut si elles correspondent.
+	// déjà retournées plus haut si elles correspondent. Si le candidat n'est
+	// PAS une des deux équipes, c'est probablement un joueur ("Mohamed Salah
+	// marque") -- même marché Piwi "Player To Score" que "buteur" ci-dessus.
 	const teamToScoreMatch = d.match(/^(.+?)\s+marque(?:\s+(?:au\s+moins\s+une\s+fois|un\s+but))?\.?\s*$/i);
 	if (teamToScoreMatch) {
 		const cand = teamToScoreMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
 		if (team) return [{ type: 'teamToScore', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		return [{ type: 'playerScorer', player: cand, sport: sportKey }];
 	}
 
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
@@ -1934,11 +1946,14 @@ async function formatMonitoringMessage(event) {
 		}
 		// Référence exchange (Piwi247/Betfair) en complément de Pinnacle, usage
 		// perso uniquement -- jamais republiée aux abonnés (canal monitoring
-		// privé seulement). Ne doit jamais bloquer l'alerte non plus.
+		// privé seulement). Réutilise les mêmes legs que Pinnacle (parseLegs)
+		// pour cibler le marché EXACT du boost, pas juste le 1X2. Ne doit
+		// jamais bloquer l'alerte non plus.
 		try {
 			const teams = splitTeams(boost.eventName);
 			if (teams) {
-				const piwiRef = await findPiwiReference(teams[0], teams[1]);
+				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+				const piwiRef = await findPiwiReference(legs, teams[0], teams[1]);
 				const piwiLine = formatPiwiReference(piwiRef);
 				if (piwiLine) lines.push(piwiLine);
 			}
@@ -2030,7 +2045,18 @@ async function backfillPinnacleRefs(env) {
 		const trackKey = `pintrack:${boost.marketId}`;
 		try {
 			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
-			const refLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
+			const pinnacleLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
+			let piwiLine = null;
+			try {
+				const teams = splitTeams(boost.eventName);
+				if (teams) {
+					const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+					piwiLine = formatPiwiReference(await findPiwiReference(legs, teams[0], teams[1]));
+				}
+			} catch {
+				// silencieux
+			}
+			const refLine = [pinnacleLine, piwiLine].filter(Boolean).join('\n');
 			if (!refLine) continue;
 
 			const existingRaw = await env.SEEN_BOOSTS.get(trackKey);
@@ -2137,67 +2163,260 @@ async function fetchPiwiMarketPrices(marketId, eventId) {
 	});
 }
 
-// Découverte du marché "Match Odds" par noms d'équipe -- limitée pour
-// l'instant à /customer/api/popular (grands événements du moment). La
-// recherche complète (toutes compétitions, tous horaires) exige un jeton
-// x-csrf-token sur l'endpoint POST correspondant, pas encore reverse-
-// engineered -- si le match n'y figure pas, silencieux comme pour tout
-// marché introuvable.
-async function findPiwiMatchOddsMarket(teamA, teamB) {
-	let events;
-	try {
-		const res = await fetch('https://exch.piwi247.com/customer/api/popular', { headers: PIWI_HEADERS });
-		if (!res.ok) return null;
-		events = await res.json();
-	} catch {
-		return null;
-	}
-	const match = (events || []).find((e) => {
-		if (e.type !== 'EVENT' || !e.name?.includes(' v ')) return false;
-		const [n1, n2] = e.name.split(' v ');
+// Compétitions Piwi connues -- /customer/api/competition/{id} donne le
+// calendrier COMPLET (tous les matchs à venir, pas juste les gros) sans
+// jeton CSRF, contrairement à l'endpoint de recherche générale (POST
+// /customer/api/sport/details/extra-time, protégé par x-csrf-token non
+// reverse-engineered malgré plusieurs tentatives). Liste volontairement
+// partielle -- à enrichir au fil des vraies cotes rencontrées.
+const PIWI_KNOWN_COMPETITIONS = [
+	'117', // Spain - La Liga
+];
+
+function findEventInList(list, teamA, teamB) {
+	return (list || []).find((c) => {
+		if (c.type !== 'EVENT' || !c.name?.includes(' v ')) return false;
+		const [n1, n2] = c.name.split(' v ');
 		return (teamsMatch(n1, teamA) && teamsMatch(n2, teamB)) || (teamsMatch(n1, teamB) && teamsMatch(n2, teamA));
 	});
-	if (!match) return null;
+}
+
+// Cherche l'eventId par noms d'équipe : d'abord dans les compétitions
+// connues (calendrier complet), puis en repli sur /customer/api/popular
+// (grands événements du moment seulement -- peut être vide en heures
+// creuses, aucune couverture garantie hors grosses affiches).
+async function findPiwiEventId(teamA, teamB) {
+	for (const compId of PIWI_KNOWN_COMPETITIONS) {
+		try {
+			const res = await fetch(`https://exch.piwi247.com/customer/api/competition/${compId}`, { headers: PIWI_HEADERS });
+			if (!res.ok) continue;
+			const detail = await res.json();
+			const found = findEventInList(detail.children, teamA, teamB);
+			if (found) return found.id;
+		} catch {
+			// essaie la compétition connue suivante
+		}
+	}
 	try {
-		const res = await fetch(`https://exch.piwi247.com/customer/api/event/${match.id}`, { headers: PIWI_HEADERS });
+		const res = await fetch('https://exch.piwi247.com/customer/api/popular', { headers: PIWI_HEADERS });
+		if (res.ok) {
+			const found = findEventInList(await res.json(), teamA, teamB);
+			if (found) return found.id;
+		}
+	} catch {
+		// silencieux
+	}
+	return null;
+}
+
+async function findPiwiEvent(teamA, teamB) {
+	const eventId = await findPiwiEventId(teamA, teamB);
+	if (!eventId) return null;
+	try {
+		const res = await fetch(`https://exch.piwi247.com/customer/api/event/${eventId}`, { headers: PIWI_HEADERS });
 		if (!res.ok) return null;
 		const detail = await res.json();
-		const marketOdds = (detail.children || []).find((c) => c.type === 'MARKET' && c.name === 'Match Odds');
-		if (!marketOdds) return null;
-		return { marketId: marketOdds.id, eventId: match.id };
+		const markets = (detail.children || []).filter((c) => c.type === 'MARKET').map((c) => ({ id: c.id, name: c.name }));
+		return { eventId, markets };
 	} catch {
 		return null;
 	}
 }
 
-// Combine découverte + noms des participants (REST) + prix live (WebSocket)
-// -- deux appels séparés car le flux WebSocket ne porte que les
-// selectionId, pas les noms.
-async function findPiwiReference(teamA, teamB) {
-	const found = await findPiwiMatchOddsMarket(teamA, teamB);
-	if (!found) return null;
-	let runnerNames;
+function piwiMarketId(piwiEvent, name) {
+	return piwiEvent.markets.find((m) => m.name === name)?.id || null;
+}
+
+// Certains marchés portent le nom de l'équipe DANS le nom du marché lui-même
+// (ex: "SE Palmeiras Win to Nil") -- le nom Piwi peut différer en orthographe
+// du nôtre, donc comparaison via teamsMatch sur le préfixe plutôt qu'une
+// égalité stricte, même logique que findWinToNil côté Pinnacle.
+function piwiMarketIdForTeamSuffix(piwiEvent, suffix, teamName) {
+	const m = piwiEvent.markets.find((mk) => mk.name.endsWith(suffix) && teamsMatch(mk.name.slice(0, mk.name.length - suffix.length), teamName));
+	return m ? m.id : null;
+}
+
+// homeTeam/awayTeam ne sont donnés que par le détail d'un marché précis (pas
+// par la liste d'événements) -- récupérés une fois via Match Odds, réutilisés
+// pour tous les marchés qui dépendent de l'ordre home/away (Correct Score,
+// Double Chance).
+async function piwiHomeAway(piwiEvent) {
+	const mid = piwiMarketId(piwiEvent, 'Match Odds');
+	if (!mid) return null;
 	try {
-		const res = await fetch(`https://exch.piwi247.com/customer/api/market/${found.marketId}`, { headers: PIWI_HEADERS });
+		const res = await fetch(`https://exch.piwi247.com/customer/api/market/${mid}`, { headers: PIWI_HEADERS });
 		if (!res.ok) return null;
 		const detail = await res.json();
-		runnerNames = new Map((detail.runners || []).map((r) => [r.selectionId, r.runnerName]));
+		return { home: detail.event?.homeTeam, away: detail.event?.awayTeam };
 	} catch {
 		return null;
 	}
-	const prices = await fetchPiwiMarketPrices(found.marketId, found.eventId);
+}
+
+// Combine REST (noms + handicap éventuel des participants) + WebSocket (prix
+// live back) pour UN marché Piwi donné. runnerPredicate filtre les
+// participants voulus -- peut en retourner plusieurs (ex: pour sommer un
+// Correct Score, comme findCorrectScoreSum côté Pinnacle).
+async function fetchPiwiSelections(marketId, eventId, runnerPredicate) {
+	let runners;
+	try {
+		const res = await fetch(`https://exch.piwi247.com/customer/api/market/${marketId}`, { headers: PIWI_HEADERS });
+		if (!res.ok) return null;
+		const detail = await res.json();
+		runners = (detail.runners || []).filter((r) => runnerPredicate(r.runnerName, r.handicap));
+		if (!runners.length) return null;
+	} catch {
+		return null;
+	}
+	const prices = await fetchPiwiMarketPrices(marketId, eventId);
 	if (!prices?.rc?.length) return null;
-	const runners = prices.rc
-		.map((r) => ({ name: runnerNames.get(r.id), back: r.bdatb?.[0]?.odds }))
-		.filter((r) => r.name && r.back);
-	if (!runners.length) return null;
-	return { runners };
+	const out = [];
+	for (const r of runners) {
+		// "Pas de handicap" vaut 0.0 côté REST mais null côté WebSocket pour les
+		// marchés simples (Match Odds, Draw no Bet...) -- !r.handicap traite les
+		// deux comme équivalents (0 est falsy), la comparaison stricte ne
+		// s'applique que pour un VRAI handicap non nul (ex: Goal Lines à 2.5).
+		const rc = prices.rc.find((x) => x.id === r.selectionId && (!r.handicap || x.hc === r.handicap));
+		const back = rc?.bdatb?.[0]?.odds;
+		if (back) out.push({ name: r.runnerName, handicap: r.handicap, back });
+	}
+	return out.length ? out : null;
+}
+
+// Résout UNE leg déjà analysée (même structure que resolveLeg côté Pinnacle,
+// voir parseLegs) contre le marché Piwi équivalent. Portée actuelle : foot
+// uniquement (structure de marché vérifiée en direct pour ce sport), un seul
+// match à la fois -- pas les combos multi-matchs, Piwi n'a pas d'équivalent
+// direct à ça. Types SANS équivalent Piwi trouvé (marge de victoire, pair/
+// impair par équipe, buts exacts, premier buteur équipe, combos Pair/Impair
+// +Total et BTTS+Total) : silencieux, Pinnacle reste la seule référence pour
+// ceux-là -- pas d'approximation inventée.
+async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
+	const mk = (name) => piwiMarketId(piwiEvent, name);
+	const isHome = (team) => homeAway && teamsMatch(homeAway.home, team);
+
+	if (leg.type === 'moneyline') {
+		const mid = mk('Match Odds');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, () => true);
+		if (!sels) return null;
+		const backed = leg.team ? sels.find((s) => teamsMatch(s.name, leg.team)) : null;
+		return { decimal: backed ? backed.back : null, all: sels };
+	}
+	if (leg.type === 'total') {
+		const mid = mk('Goal Lines');
+		if (!mid) return null;
+		// runnerName inclut le chiffre ("Over 2.5", pas juste "Over") -- on ne
+		// s'appuie que sur le préfixe + le handicap exact, pas une égalité
+		// stricte sur le nom complet (fragile au formatage du nombre).
+		const prefix = leg.side === 'over' ? 'Over' : 'Under';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name, hc) => name?.startsWith(prefix) && hc === leg.points);
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'winAndTotal' && leg.points === 2.5) {
+		const mid = mk('Match Odds and Over/Under 2.5 Goals');
+		if (!mid) return null;
+		const cond = leg.side === 'over' ? 'Over 2.5 Goals' : 'Under 2.5 Goals';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => {
+			const idx = name.lastIndexOf('/');
+			if (idx === -1) return false;
+			return name.slice(idx + 1) === cond && teamsMatch(name.slice(0, idx), leg.team);
+		});
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'correctScore' && homeAway) {
+		const mid = mk('Correct Score');
+		if (!mid) return null;
+		const teamIsHome = isHome(leg.team);
+		const wantLines = new Set(
+			leg.scoreLines.map(([teamScore, oppScore]) => (teamIsHome ? `${teamScore} - ${oppScore}` : `${oppScore} - ${teamScore}`))
+		);
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => wantLines.has(name));
+		if (!sels || sels.length !== wantLines.size) return null; // tout ou rien, comme pour Pinnacle
+		const probSum = sels.reduce((sum, s) => sum + 1 / s.back, 0);
+		return probSum ? { decimal: 1 / probSum } : null;
+	}
+	if (leg.type === 'doubleChance' && homeAway) {
+		const mid = mk('Double Chance');
+		if (!mid) return null;
+		const label = isHome(leg.team) ? 'Home or Draw' : 'Draw or Away';
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === label);
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'drawNoBet') {
+		const mid = mk('Draw no Bet');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.team));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'oddEvenTotal') {
+		const mid = mk('Total Goals Odd/Even');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === leg.label);
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'htft' && homeAway) {
+		const mid = mk('Half Time/Full Time');
+		if (!mid) return null;
+		// Comparaison via teamsMatch (pas une égalité stricte) : leg.htOutcome/
+		// ftOutcome sont NOS noms d'équipe extraits du texte Unibet/Winamax, qui
+		// peuvent différer en orthographe du nom littéral Piwi.
+		const outcomeMatches = (outcome, piwiSide) => (outcome === 'Draw' ? piwiSide === 'Draw' : teamsMatch(piwiSide, outcome));
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => {
+			const [ht, ft] = (name || '').split('/');
+			return outcomeMatches(leg.htOutcome, ht) && outcomeMatches(leg.ftOutcome, ft);
+		});
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'winToNil') {
+		const mid = piwiMarketIdForTeamSuffix(piwiEvent, ' Win to Nil', leg.team);
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'btts') {
+		const mid = mk('Both teams to Score?');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'playerScorer') {
+		const mid = mk('Player To Score');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.player));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	return null;
+}
+
+// Point d'entrée : résout la/les legs déjà analysées pour la CB (mêmes legs
+// que Pinnacle, voir parseLegs) contre les marchés Piwi. Un seul match à la
+// fois -- si `legs` vient d'un combo multi-matchs, silencieux (Piwi n'a pas
+// de marché combiné multi-événements). Retourne le prix "juste" pour LA
+// condition exacte du boost, pas les 3 côtés du 1X2 (sauf pour un moneyline
+// simple, où les 3 restent affichés -- c'est déjà l'info utile).
+async function findPiwiReference(legs, teamA, teamB) {
+	if (!legs || legs.length !== 1) return null;
+	const leg = legs[0];
+	if (leg.teamA && leg.teamA !== teamA && leg.teamB && leg.teamB !== teamB) return null; // leg d'un autre match (combo)
+	const piwiEvent = await findPiwiEvent(teamA, teamB);
+	if (!piwiEvent) return null;
+	const needsHomeAway = ['correctScore', 'doubleChance', 'htft'].includes(leg.type);
+	const homeAway = needsHomeAway ? await piwiHomeAway(piwiEvent) : null;
+	if (needsHomeAway && !homeAway) return null;
+	return resolvePiwiLeg(leg, piwiEvent, homeAway);
 }
 
 function formatPiwiReference(piwiRef) {
 	if (!piwiRef) return null;
-	const parts = piwiRef.runners.map((r) => `${r.name} : ${Number(r.back).toFixed(2)}`);
-	return `♟️ Exchange (Piwi247, perso) : ${parts.join(' · ')}`;
+	if (piwiRef.all) {
+		const parts = piwiRef.all.map((r) => `${r.name} : ${Number(r.back).toFixed(2)}`);
+		return `♟️ Exchange (Piwi247, perso) : ${parts.join(' · ')}`;
+	}
+	if (piwiRef.decimal) {
+		return `♟️ Exchange (Piwi247, perso) : ${Number(piwiRef.decimal).toFixed(2)}`;
+	}
+	return null;
 }
 
 async function checkAndPost(env) {
@@ -2265,9 +2484,11 @@ export default {
 		if (url.pathname === '/test-piwi-teams') {
 			const a = url.searchParams.get('a');
 			const b = url.searchParams.get('b');
-			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB', { status: 400 });
-			const ref = await findPiwiReference(a, b);
-			return new Response(JSON.stringify({ ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
+			const d = url.searchParams.get('d') || `${a} gagne`;
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description (optionnel)', { status: 400 });
+			const legs = parseLegs(`${a} - ${b}`, d, 'football');
+			const ref = await findPiwiReference(legs, a, b);
+			return new Response(JSON.stringify({ legs, ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/digest-data') {
 			const date = url.searchParams.get('date') || todayKey();
