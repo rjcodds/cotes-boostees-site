@@ -1197,10 +1197,13 @@ export default {
 				return new Response('Forbidden', { status: 403 });
 			}
 			const update = await request.json().catch(() => null);
+			console.log('telegram-webhook update:', JSON.stringify(update));
 			const msg = update?.message || update?.channel_post;
 			const text = (msg?.text || '').trim();
 			// Réservé à l'usage perso (canal privé de monitoring) -- pas une
-			// commande publique, on ignore tout le reste silencieusement.
+			// commande publique, on ignore tout le reste silencieusement. Restera
+			// fermé (rien ne s'exécute) tant que MONITORING_CHAT_ID n'est pas
+			// corrigé -- volontaire : mieux vaut échouer fermé qu'ouvert à tous.
 			if (msg && String(msg.chat?.id) === String(env.MONITORING_CHAT_ID) && /^\/check\b/i.test(text)) {
 				const args = text.replace(/^\/check\s*/i, '').trim();
 				const teams = splitTeams(args);
