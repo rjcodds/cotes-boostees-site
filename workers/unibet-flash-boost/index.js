@@ -724,7 +724,9 @@ function findScheduleBtts(leagues, count, hour, minute) {
 	return null;
 }
 
-function findMoneyline(leagues, teamA, teamB) {
+// period 0 = match complet, period 1 = 1ère mi-temps (foot/hand/etc.) -- même
+// marché "moneyline" chez Pinnacle, juste une période différente.
+function findMoneyline(leagues, teamA, teamB, period = 0) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
@@ -735,7 +737,7 @@ function findMoneyline(leagues, teamA, teamB) {
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
 		);
 		if (!matchup) continue;
-		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'moneyline' && mk.period === 0);
+		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'moneyline' && mk.period === period);
 		if (!market) continue;
 		return { league: league.name, market, participants: matchup.participants };
 	}
@@ -811,15 +813,17 @@ function parseLegs(eventName, description, sportKey) {
 
 	// Combo multi-matchs sur victoire simple : "TeamA et TeamB gagnent chacun
 	// leur match (respectivement contre OppA et OppB)" -- pas de total/marge,
-	// juste une victoire par match, matchs différents = indépendants.
+	// juste une victoire par match, matchs différents = indépendants. Variante
+	// "la première mi-temps" -> même marché Pinnacle "moneyline" mais period 1.
 	const multiMoneylineMatch = d.match(
-		/(.+?)\s+gagnent\s+chacun\s+leur\s+match\s*\(respectivement\s+contre\s+(.+?)\)/i
+		/(.+?)\s+gagnent\s+chacun\s+(leur\s+match|la\s+premiere\s+mi-?temps)\s*\(respectivement\s+contre\s+(.+?)\)/i
 	);
 	if (multiMoneylineMatch) {
+		const period = /premiere/i.test(multiMoneylineMatch[2]) ? 1 : 0;
 		const teamNames = multiMoneylineMatch[1].split(/\s+et\s+/).map((s) => s.trim());
-		const oppNames = multiMoneylineMatch[2].split(/\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiMoneylineMatch[3].split(/\s+et\s+/).map((s) => s.trim());
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
-			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, sport: sportKey }));
+			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, period, sport: sportKey }));
 		}
 	}
 
@@ -960,7 +964,7 @@ async function resolveLeg(leg, leagueData) {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
 	}
 	if (leg.type === 'moneyline') {
-		const found = findMoneyline(leagues, leg.teamA, leg.teamB);
+		const found = findMoneyline(leagues, leg.teamA, leg.teamB, leg.period || 0);
 		if (!found) return null;
 		const home = found.market.prices.find((p) => p.designation === 'home');
 		const away = found.market.prices.find((p) => p.designation === 'away');
