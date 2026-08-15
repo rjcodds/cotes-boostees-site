@@ -992,6 +992,81 @@ async function fetchPreloadedState(env) {
 	}
 }
 
+// Compare la structure de deux legs parsés (même type, même(s) équipe(s), même
+// seuil) -- pas juste le texte brut, qui diffère souvent entre bookmakers pour
+// un marché identique. Le sport passé à parseLegs ne sert qu'à activer le
+// parsing (il n'influence pas la structure retournée), donc on peut comparer
+// sans connaître le vrai sport des deux côtés.
+function legsEquivalent(legsA, legsB) {
+	if (!legsA || !legsB || legsA.length !== legsB.length) return false;
+	return legsA.every((a, i) => {
+		const b = legsB[i];
+		if (a.type !== b.type) return false;
+		if (a.type === 'moneyline' || a.type === 'total') {
+			return teamsMatch(a.teamA, b.teamA) && teamsMatch(a.teamB, b.teamB) && a.side === b.side && a.points === b.points;
+		}
+		if (a.type === 'winAndTotal') {
+			return teamsMatch(a.team, b.team) && a.side === b.side && a.points === b.points;
+		}
+		if (a.type === 'margin') {
+			return teamsMatch(a.team, b.team) && a.margin === b.margin;
+		}
+		if (a.type === 'correctScore') {
+			return teamsMatch(a.team, b.team) && JSON.stringify(a.scoreLines) === JSON.stringify(b.scoreLines);
+		}
+		return false;
+	});
+}
+
+// Le même match/marché peut être boosté chez Unibet ET Winamax en même temps
+// -- utile de le savoir pour prendre la meilleure cote des deux. Ne tourne que
+// côté Winamax (pas besoin de le faire des deux côtés, ça doublonnerait
+// l'alerte) : va chercher le /current public d'Unibet (fetch simple, pas de
+// Browser Rendering) et compare structurellement.
+async function detectDuplicates(env, myBoosts) {
+	if (!env.MONITORING_CHAT_ID) return;
+	let otherBoosts;
+	try {
+		const res = await fetch('https://unibet-flash-boost.jc-hd-affiliation.workers.dev/current');
+		if (!res.ok) return;
+		otherBoosts = (await res.json()).boosts || [];
+	} catch {
+		return;
+	}
+
+	for (const mine of myBoosts) {
+		const myLegs = parseLegs(mine.eventName, mine.description, 'football'); // sport bidon, juste pour activer le parsing
+		if (!myLegs) continue;
+		for (const other of otherBoosts) {
+			const otherLegs = parseLegs(other.eventName, other.description, 'football');
+			if (!otherLegs || !legsEquivalent(myLegs, otherLegs)) continue;
+
+			const pairKey = [mine.marketId, other.marketId].sort().join('|');
+			const dupKey = `dup:${pairKey}`;
+			if (await env.SEEN_BOOSTS.get(dupKey)) continue;
+
+			const mineDecimal = parseFrenchDecimal(mine.newOdds);
+			const otherDecimal = parseFrenchDecimal(other.newOdds);
+			const better = mineDecimal != null && otherDecimal != null && mineDecimal >= otherDecimal ? 'WINAMAX' : 'UNIBET';
+			const text = [
+				`🔀 Doublon détecté entre bookmakers`,
+				``,
+				mine.eventName,
+				`WINAMAX : ${mine.description} — ${mine.newOdds}`,
+				`UNIBET : ${other.description} — ${other.newOdds}`,
+				``,
+				`Meilleure valeur : ${better}`,
+			].join('\n');
+			try {
+				await sendToChat(env, env.MONITORING_CHAT_ID, text);
+			} catch (e) {
+				console.log('detectDuplicates: send failed:', String(e));
+			}
+			await env.SEEN_BOOSTS.put(dupKey, '1', { expirationTtl: SEEN_TTL_SECONDS });
+		}
+	}
+}
+
 async function checkAndPost(env) {
 	const state = await fetchPreloadedState(env);
 	const boosts = parseBoosts(state);
@@ -1007,6 +1082,7 @@ async function checkAndPost(env) {
 	);
 	await postMonitoringDiff(env, prevBoosts, boosts);
 	await refreshTrackedPinnacleRefs(env);
+	await detectDuplicates(env, boosts);
 
 	let posted = 0;
 	for (const boost of eligible) {
