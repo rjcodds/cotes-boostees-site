@@ -778,7 +778,8 @@ function parseLegs(eventName, description, sportKey) {
 	if (!teams) return null;
 	const [teamA, teamB] = teams;
 
-	const winningTeam = teamsMatch(teamA, extractWinner(d)) ? teamA : teamsMatch(teamB, extractWinner(d)) ? teamB : null;
+	const extractedWinner = extractWinner(d);
+	const winningTeam = isExactlyTeamName(teamA, extractedWinner) ? teamA : isExactlyTeamName(teamB, extractedWinner) ? teamB : null;
 
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
 	// Deux formulations existent pour la marge de victoire : "gagne par/de N
@@ -858,6 +859,21 @@ function parseLegs(eventName, description, sportKey) {
 function extractWinner(d) {
 	const m = d.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+gagne\b/i);
 	return m ? m[1].trim() : '';
+}
+
+// Comparaison stricte pour valider qu'un texte extrait EST le nom d'équipe,
+// pas juste teamsMatch (inclusion de sous-chaîne trop permissive pour ce cas
+// précis) -- sinon "Mohamed Salah buteur et Trabzonspor" se fait prendre pour
+// le nom de l'équipe "Trabzonspor" juste parce que la chaîne se termine par
+// ce nom, et un pari combiné but+victoire se fait passer pour une simple
+// victoire (mauvaise cote de référence, pire qu'aucune référence).
+function isExactlyTeamName(candidate, teamName) {
+	const nc = normalizeTeam(candidate);
+	const nt = normalizeTeam(teamName);
+	if (!nc || !nt) return false;
+	if (nc === nt) return true;
+	if (Math.abs(nc.length - nt.length) > 4) return false; // texte bien plus long -> suspect
+	return teamsMatch(candidate, teamName);
 }
 
 function splitTeams(eventName) {
