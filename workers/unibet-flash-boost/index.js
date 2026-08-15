@@ -368,6 +368,16 @@ function wordsFuzzyMatch(wa, wb) {
 	return levenshtein(wa, wb) <= maxDist;
 }
 
+// Ajoute les paires de mots adjacents comme tokens candidats en plus des mots
+// individuels -- gère les variantes où un nom composé est écrit collé d'un
+// côté et en mots séparés de l'autre ("Baystars" chez Winamax / "Bay Stars"
+// chez Pinnacle pour Yokohama DeNA BayStars).
+function withCompoundWords(words) {
+	const out = new Set(words);
+	for (let i = 0; i < words.length - 1; i++) out.add(words[i] + words[i + 1]);
+	return [...out];
+}
+
 function teamsMatch(a, b) {
 	const na = normalizeTeam(a);
 	const nb = normalizeTeam(b);
@@ -377,8 +387,15 @@ function teamsMatch(a, b) {
 	const wordsA = [...new Set(na.split(' ').filter((w) => w.length > 2))];
 	const wordsB = [...new Set(nb.split(' ').filter((w) => w.length > 2))];
 	if (!wordsA.length || !wordsB.length) return false;
-	let overlap = 0;
-	for (const w of wordsA) if (wordsB.some((x) => wordsFuzzyMatch(w, x))) overlap++;
+	// Bidirectionnel : selon l'ordre des arguments, c'est parfois A qui a le mot
+	// composé collé (et B qui doit être joint pour matcher), parfois l'inverse.
+	const poolA = withCompoundWords(wordsA);
+	const poolB = withCompoundWords(wordsB);
+	let overlapAtoB = 0;
+	for (const w of wordsA) if (poolB.some((x) => wordsFuzzyMatch(w, x))) overlapAtoB++;
+	let overlapBtoA = 0;
+	for (const w of wordsB) if (poolA.some((x) => wordsFuzzyMatch(w, x))) overlapBtoA++;
+	const overlap = Math.max(overlapAtoB, overlapBtoA);
 	return overlap >= Math.min(wordsA.length, wordsB.length) * 0.5;
 }
 
@@ -735,6 +752,20 @@ function parseLegs(eventName, description, sportKey) {
 		if (legs.length >= 2) return legs;
 	}
 
+	// Combo multi-matchs sur victoire simple : "TeamA et TeamB gagnent chacun
+	// leur match (respectivement contre OppA et OppB)" -- pas de total/marge,
+	// juste une victoire par match, matchs différents = indépendants.
+	const multiMoneylineMatch = d.match(
+		/(.+?)\s+gagnent\s+chacun\s+leur\s+match\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiMoneylineMatch) {
+		const teamNames = multiMoneylineMatch[1].split(/\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiMoneylineMatch[2].split(/\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, sport: sportKey }));
+		}
+	}
+
 	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts/points"
 	const teams = splitTeams(eventName);
 	if (!teams) return null;
@@ -928,15 +959,25 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 	if (resolved.length === 1) {
 		return { type: 'single', league: resolved[0].league, decimal: resolved[0].decimal, exact: resolved[0].exact };
 	}
-	// combo multi-matchs : legs indépendantes (matchs différents) -> multiplication exacte
+	// combo multi-matchs : legs indépendantes (matchs différents) -> multiplication exacte.
+	// Une leg "moneyline" n'a pas de .decimal direct (home/away/draw séparés) --
+	// il faut extraire le prix du côté effectivement backé.
+	const legDecimal = (r) => {
+		if (r.moneyline) {
+			const backed = r.backedDesignation === 'home' ? r.moneyline.home : r.backedDesignation === 'away' ? r.moneyline.away : null;
+			return backed ? americanToDecimal(backed.price) : null;
+		}
+		return r.decimal;
+	};
+	if (resolved.some((r) => legDecimal(r) == null)) return null; // pas d'approximation si un côté est ambigu
 	let probProduct = 1;
-	for (const r of resolved) probProduct *= 1 / r.decimal;
+	for (const r of resolved) probProduct *= 1 / legDecimal(r);
 	return {
 		type: 'combo',
 		legues: [...new Set(resolved.map((r) => r.league))],
 		legs: resolved.map((r, i) => ({
 			label: legs[i].teamA ? `${legs[i].teamA} - ${legs[i].teamB}` : legs[i].team,
-			decimal: r.decimal,
+			decimal: legDecimal(r),
 		})),
 		decimal: 1 / probProduct,
 		exact: true, // matchs différents = événements indépendants, pas d'approximation
