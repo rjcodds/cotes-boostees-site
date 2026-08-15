@@ -593,6 +593,63 @@ function findCorrectScoreSum(leagues, teamName, opponentName, scoreLines) {
 	return null;
 }
 
+// Combo "toutes les équipes marquent" sans noms d'équipes ("Les 2 équipes
+// marquent dans chacun des N matchs à HHhMM") -- les matchs concernés se
+// retrouvent via le calendrier Pinnacle de la compétition déjà identifiée :
+// tous les matchs qui commencent à cette heure-là aujourd'hui (heure de
+// Paris). Si ce n'est pas exactement N matchs, ambigu -> silencieux plutôt
+// que de deviner lesquels. BTTS ("Both Teams To Score?") est un marché direct
+// Pinnacle, donc chaque leg est exacte ; matchs différents = indépendants.
+function findScheduleBtts(leagues, count, hour, minute) {
+	const now = new Date();
+	const todayParts = new Intl.DateTimeFormat('fr-FR', {
+		timeZone: 'Europe/Paris',
+		day: '2-digit',
+		month: '2-digit',
+		year: 'numeric',
+	}).formatToParts(now);
+	const today = `${todayParts.find((p) => p.type === 'year').value}-${todayParts.find((p) => p.type === 'month').value}-${todayParts.find((p) => p.type === 'day').value}`;
+
+	for (const { league, matchups, markets } of leagues) {
+		const matching = matchups.filter((m) => {
+			if (m.parentId || m.type !== 'matchup' || !m.startTime) return false;
+			const parts = new Intl.DateTimeFormat('fr-FR', {
+				timeZone: 'Europe/Paris',
+				day: '2-digit',
+				month: '2-digit',
+				year: 'numeric',
+				hour: '2-digit',
+				minute: '2-digit',
+				hourCycle: 'h23',
+			}).formatToParts(new Date(m.startTime));
+			const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+			const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+			const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+			return date === today && h === hour && mi === minute;
+		});
+		if (matching.length !== count) continue; // pas le bon nombre -> ambigu, on essaiera une autre ligue candidate
+
+		const subLegs = [];
+		let probProduct = 1;
+		let allFound = true;
+		for (const m of matching) {
+			const bttsSpecial = matchups.find((s) => s.parentId === m.id && s.special?.description === 'Both Teams To Score?');
+			const yesPart = bttsSpecial?.participants?.find((p) => p.name === 'Yes');
+			const price = yesPart ? priceForParticipant(markets, bttsSpecial.id, yesPart.id) : null;
+			if (price == null) {
+				allFound = false;
+				break;
+			}
+			const decimal = americanToDecimal(price);
+			probProduct *= 1 / decimal;
+			subLegs.push({ label: (m.participants || []).map((p) => p.name).join(' - '), decimal });
+		}
+		if (!allFound) continue;
+		return { league: league.name, decimal: 1 / probProduct, exact: true, subLegs };
+	}
+	return null;
+}
+
 function findMoneyline(leagues, teamA, teamB) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
@@ -690,6 +747,26 @@ function parseLegs(eventName, description, sportKey) {
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
 			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, sport: sportKey }));
 		}
+	}
+
+	// Combo "toutes les équipes marquent" SANS noms d'équipes -- juste une heure
+	// de coup d'envoi partagée et un nombre de matchs ("Les 2 équipes marquent
+	// dans chacun des 3 matchs à 13h00"). Pas de nom à faire correspondre : les
+	// matchs concernés se retrouvent via le calendrier Pinnacle de la même
+	// compétition (heure + date du jour) -- voir resolveScheduleBtts.
+	const scheduleBttsMatch =
+		/les\s+2\s+equipes|les\s+deux\s+equipes/i.test(d) &&
+		d.match(/marquent\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?/i);
+	if (scheduleBttsMatch) {
+		return [
+			{
+				type: 'scheduleBtts',
+				count: parseInt(scheduleBttsMatch[1], 10),
+				hour: parseInt(scheduleBttsMatch[2], 10),
+				minute: scheduleBttsMatch[3] ? parseInt(scheduleBttsMatch[3], 10) : 0,
+				sport: sportKey,
+			},
+		];
 	}
 
 	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts/points"
@@ -805,6 +882,9 @@ async function resolveLeg(leg, leagueData) {
 	if (leg.type === 'correctScore') {
 		return findCorrectScoreSum(leagues, leg.team, leg.opponent, leg.scoreLines);
 	}
+	if (leg.type === 'scheduleBtts') {
+		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
+	}
 	if (leg.type === 'moneyline') {
 		const found = findMoneyline(leagues, leg.teamA, leg.teamB);
 		if (!found) return null;
@@ -884,6 +964,18 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 			league: resolved[0].league,
 			moneyline: resolved[0].moneyline,
 			backedDesignation: resolved[0].backedDesignation,
+		};
+	}
+	if (resolved.length === 1 && resolved[0].subLegs) {
+		// scheduleBtts : une seule "leg" en interne, mais qui représente plusieurs
+		// matchs -- affiche le détail comme un vrai combo.
+		return {
+			type: 'combo',
+			legues: [resolved[0].league],
+			legs: resolved[0].subLegs,
+			decimal: resolved[0].decimal,
+			exact: true,
+			legCount: resolved[0].subLegs.length,
 		};
 	}
 	if (resolved.length === 1) {
