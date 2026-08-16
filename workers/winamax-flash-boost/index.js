@@ -2456,10 +2456,12 @@ const PIWI_COMPETITIONS_BY_SPORT = {
 	],
 	// Tennis : contrairement au foot, un ID par TOURNOI (pas un championnat
 	// saisonnier) -- change chaque semaine, à mettre à jour plus souvent que
-	// les autres sports. Actuel au 2026-08-16, retrouvé via l'ID de l'événement
-	// A.Zverev v Norrie (parents -> COMPETITION).
+	// les autres sports, ET séparément par circuit ATP/WTA (tournois distincts
+	// même quand joués la même semaine dans la même ville). Actuel au
+	// 2026-08-16.
 	tennis: [
-		'12822480', // ATP Cincinnati OH 2026
+		'12822480', // ATP Cincinnati OH 2026 -- retrouvé via l'événement A.Zverev v Norrie
+		'12822537', // WTA Cincinnati 2026 -- retrouvé via l'événement Boisson v Bencic
 	],
 };
 
