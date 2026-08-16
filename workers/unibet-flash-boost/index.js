@@ -2332,16 +2332,30 @@ const PIWI_COMPETITIONS_BY_SPORT = {
 	mma: [
 		'10581356', // UFC Matches
 	],
+	baseball: [
+		'11196870', // MLB
+	],
+	hockey: [
+		'12550521', // NHL
+	],
+	// Tennis : pas d'ID de compétition stable à figer (tournois hebdomadaires,
+	// pas un championnat saisonnier) -- repli sur /customer/api/popular
+	// uniquement pour l'instant.
 };
 
 // Noms de marchés Piwi pour moneyline/total -- diffèrent par sport ("Match
 // Odds"/"Goal Lines" en foot, "Moneyline"/"Total Points" en basket, "Fight
-// Result" en MMA -- pas de "total" en MMA). Vérifié en direct pour chaque
-// sport avant d'écrire quoi que ce soit.
+// Result" en MMA (pas de "total"), "Total Runs" en baseball, "Total Goals"
+// en hockey. Vérifié en direct pour chaque sport avant d'écrire quoi que ce
+// soit. Hockey a aussi un "60 Minute 3 Way Match Odds" (avec match nul après
+// 60 min) non câblé -- "Moneyline" (vainqueur final, prolongation/tirs au
+// but inclus) correspond mieux à "TeamX gagne" simple.
 const PIWI_MARKET_NAMES = {
 	football: { moneyline: 'Match Odds', total: 'Goal Lines' },
 	basketball: { moneyline: 'Moneyline', total: 'Total Points' },
 	mma: { moneyline: 'Fight Result' },
+	baseball: { moneyline: 'Moneyline', total: 'Total Runs' },
+	hockey: { moneyline: 'Moneyline', total: 'Total Goals' },
 };
 
 // Le séparateur entre les deux participants dans le nom d'événement Piwi
