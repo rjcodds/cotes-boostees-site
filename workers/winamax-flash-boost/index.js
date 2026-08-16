@@ -1134,7 +1134,7 @@ function parseLegs(eventName, description, sportKey) {
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
 	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.
-	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i);
+	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(?:buts?|points?|runs?|jeux?)\s+ou\s+plus/i);
 	if (marginAll) {
 		const margin = parseInt(marginAll[1], 10);
 		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
@@ -1150,7 +1150,7 @@ function parseLegs(eventName, description, sportKey) {
 	// chacun des matchs suivants : TeamA - TeamB et TeamC - TeamD[, TeamE - TeamF]"
 	// -- matchs différents = événements indépendants, multiplication exacte.
 	const multiTotalMatch = d.match(
-		/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)\s+(?:lors de |dans )?chacun des matchs suivants\s*:\s*(.+)/i
+		/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?|jeux?)\s+(?:lors de |dans )?chacun des matchs suivants\s*:\s*(.+)/i
 	);
 	if (multiTotalMatch) {
 		const side = /plus/i.test(multiTotalMatch[1]) ? 'over' : 'under';
@@ -1253,9 +1253,19 @@ function parseLegs(eventName, description, sportKey) {
 	// "Les deux joueurs gagnent chacun (au moins) un set" (tennis, MÊME match
 	// -- si "respectivement" est présent c'est le combo multi-matchs déjà géré
 	// plus haut) -- voir findBothWinASet : équivaut au marché "Total Sets"
-	// (Over 2.5) déjà publié par Pinnacle, pas une approximation.
+	// (Over 2.5) déjà publié par Pinnacle, pas une approximation. Côté Piwi,
+	// correspond directement au marché "Number of Sets" -> "Three Sets".
 	if (!/respectivement/i.test(d) && /gagnent?\s+chacune?\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)) {
 		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
+	}
+
+	// "{Joueur} remporte/gagne au moins 1 set" (tennis, UN SEUL joueur) --
+	// marché Piwi direct "{Joueur} To Win A Set?" (Yes/No), vérifié en direct
+	// sur A.Zverev v Norrie. Absent chez Pinnacle (confirmé plus tôt cette
+	// session avec "Boisson remporte au moins 1 set" -- aucun marché trouvé).
+	const playerWinsASetMatch = d.match(/^(.+?)\s+(?:remporte|gagne)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\s*\??\.?\s*$/i);
+	if (playerWinsASetMatch && !/respectivement/i.test(d)) {
+		return [{ type: 'playerWinsASet', player: playerWinsASetMatch[1].trim(), sport: sportKey }];
 	}
 
 	// "Les 2 équipes marquent et plus/moins de N buts" -- marché Pinnacle
@@ -1620,12 +1630,12 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'methodOfVictory', fighter: winningTeam, sport: sportKey }];
 	}
 
-	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
+	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?|jeux?)/i);
 	// Deux formulations existent pour la marge de victoire : "gagne par/de N
 	// buts ou plus" et "gagne par au moins N buts d'écart".
 	const marginMatch =
-		d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?)\s+ou\s+plus/i) ||
-		d.match(/gagne\s+par\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?)(?:\s+d.ecart)?/i);
+		d.match(/gagne\s+(?:par|de)\s+(\d+)\s*(?:buts?|points?|runs?|jeux?)\s+ou\s+plus/i) ||
+		d.match(/gagne\s+par\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?|jeux?)(?:\s+d.ecart)?/i);
 	// "TeamX gagne le match 1-0, 2-0 ou 3-0" ET "TeamX gagne 1:0, 2:0 ou 3:0"
 	// sont deux formulations réelles vues sur Unibet -- "le match" est
 	// optionnel, le séparateur de score est soit "-" soit ":" (bug trouvé sur
@@ -2444,9 +2454,13 @@ const PIWI_COMPETITIONS_BY_SPORT = {
 	hockey: [
 		'12550521', // NHL
 	],
-	// Tennis : pas d'ID de compétition stable à figer (tournois hebdomadaires,
-	// pas un championnat saisonnier) -- repli sur /customer/api/popular
-	// uniquement pour l'instant.
+	// Tennis : contrairement au foot, un ID par TOURNOI (pas un championnat
+	// saisonnier) -- change chaque semaine, à mettre à jour plus souvent que
+	// les autres sports. Actuel au 2026-08-16, retrouvé via l'ID de l'événement
+	// A.Zverev v Norrie (parents -> COMPETITION).
+	tennis: [
+		'12822480', // ATP Cincinnati OH 2026
+	],
 };
 
 // Noms de marchés Piwi pour moneyline/total -- diffèrent par sport ("Match
@@ -2462,12 +2476,9 @@ const PIWI_MARKET_NAMES = {
 	mma: { moneyline: 'Fight Result' },
 	baseball: { moneyline: 'Moneyline', total: 'Total Runs' },
 	hockey: { moneyline: 'Moneyline', total: 'Total Goals' },
-	// NON VÉRIFIÉ EN DIRECT (contrairement à tout le reste ci-dessus) : aucun
-	// match tennis accessible au moment de l'écriture (tournois hebdomadaires,
-	// pas d'ID de compétition stable à chercher, /popular vide). "Match Odds"
-	// est le nom historique standard de Betfair pour ce marché, mais à
-	// confirmer dès qu'un vrai boost tennis ne trouve rien.
-	tennis: { moneyline: 'Match Odds' },
+	// Vérifié en direct sur A.Zverev v Norrie (ATP Cincinnati) : "Match Odds"
+	// confirmé, plus "Total Games" (buts/points -> jeux pour le tennis).
+	tennis: { moneyline: 'Match Odds', total: 'Total Games' },
 };
 
 // Le séparateur entre les deux participants dans le nom d'événement Piwi
@@ -2735,6 +2746,28 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		if (!mid) return null;
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
 		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'playerWinsASet') {
+		// Marché Piwi "{Joueur} To Win A Set?" -- nommage incohérent selon le
+		// joueur constaté en direct ("A Zverev To Win A Set?" a des runners
+		// "Yes"/"No" bruts, "Norrie To Win A Set?" a "Norrie Yes"/"Norrie No"
+		// préfixés) -- on accepte les deux formes.
+		const mid = piwiMarketIdForTeamSuffix(piwiEvent, ' To Win A Set?', leg.player);
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes' || name?.endsWith(' Yes'));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'bothWinASet') {
+		// Marché Piwi direct "Number of Sets" -> "Three Sets" (le match va au
+		// set décisif). On vérifie qu'il n'y a QUE 2 issues (Two/Three Sets) --
+		// confirme le best-of-3, sinon silencieux (même garde-fou que côté
+		// Pinnacle avec la ligne 2.5, voir findBothWinASet).
+		const mid = mk('Number of Sets');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, () => true);
+		if (!sels || sels.length !== 2) return null;
+		const three = sels.find((s) => s.name === 'Three Sets');
+		return three ? { decimal: three.back } : null;
 	}
 	if (leg.type === 'margin') {
 		// Piwi n'a pas de marché "Winning Margin" direct comme Pinnacle -- le
