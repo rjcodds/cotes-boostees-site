@@ -2462,6 +2462,12 @@ const PIWI_MARKET_NAMES = {
 	mma: { moneyline: 'Fight Result' },
 	baseball: { moneyline: 'Moneyline', total: 'Total Runs' },
 	hockey: { moneyline: 'Moneyline', total: 'Total Goals' },
+	// NON VÉRIFIÉ EN DIRECT (contrairement à tout le reste ci-dessus) : aucun
+	// match tennis accessible au moment de l'écriture (tournois hebdomadaires,
+	// pas d'ID de compétition stable à chercher, /popular vide). "Match Odds"
+	// est le nom historique standard de Betfair pour ce marché, mais à
+	// confirmer dès qu'un vrai boost tennis ne trouve rien.
+	tennis: { moneyline: 'Match Odds' },
 };
 
 // Le séparateur entre les deux participants dans le nom d'événement Piwi
@@ -2728,6 +2734,22 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const mid = piwiMarketIdForTeamSuffix(piwiEvent, ' Win to Nil', leg.team);
 		if (!mid) return null;
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'margin') {
+		// Piwi n'a pas de marché "Winning Margin" direct comme Pinnacle -- le
+		// marché "Asian Handicap" sert de SYNONYME exact : "gagne par au moins N
+		// buts" = "couvre le handicap -(N-0.5)" (ex: marge >= 2 = handicap
+		// -1.5). runnerName porte le nom d'équipe ET le handicap ("Racing
+		// Santander -1.5") -- on isole le nom en retirant le suffixe numérique.
+		const mid = mk('Asian Handicap');
+		if (!mid) return null;
+		const wantHandicap = -(leg.margin - 0.5);
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name, hc) => {
+			if (hc !== wantHandicap) return false;
+			const teamPart = (name || '').replace(/\s*[+-]\d+(?:\.\d+)?\s*$/, '').trim();
+			return teamsMatch(teamPart, leg.team);
+		});
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
 	if (leg.type === 'btts') {
