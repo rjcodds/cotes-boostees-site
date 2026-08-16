@@ -1294,7 +1294,13 @@ function parseLegs(eventName, description, sportKey) {
 	// plus haut) -- voir findBothWinASet : équivaut au marché "Total Sets"
 	// (Over 2.5) déjà publié par Pinnacle, pas une approximation. Côté Piwi,
 	// correspond directement au marché "Number of Sets" -> "Three Sets".
-	if (!/respectivement/i.test(d) && /gagnent?\s+chacune?\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)) {
+	// Deuxième formulation réelle vue sur Unibet : "Les 2 joueurs gagnent un
+	// set ?" (pas de "chacun", mais "les 2/deux joueurs" comme sujet lève
+	// l'ambiguïté avec playerWinsASet qui vise UN seul joueur nommé).
+	if (
+		!/respectivement/i.test(d) &&
+		/(?:gagnent?\s+chacune?|les\s+(?:2|deux)\s+joueurs\s+gagnent)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)
+	) {
 		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
 	}
 
@@ -2614,15 +2620,26 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
 	if (leg.type === 'correctScore' && homeAway) {
-		const mid = mk('Correct Score');
-		if (!mid) return null;
 		const teamIsHome = isHome(leg.team);
 		const wantLines = new Set(
 			leg.scoreLines.map(([teamScore, oppScore]) => (teamIsHome ? `${teamScore} - ${oppScore}` : `${oppScore} - ${teamScore}`))
 		);
-		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => wantLines.has(name));
-		if (!sels || sels.length !== wantLines.size) return null; // tout ou rien, comme pour Pinnacle
-		const probSum = sels.reduce((sum, s) => sum + 1 / s.back, 0);
+		// Le marché principal "Correct Score" ne couvre que les scores 0-3 de
+		// chaque côté -- au-delà (ex: 4-1), le score exact bascule sur un
+		// marché séparé "Correct Score 2 Home"/"Correct Score 2 Away" selon le
+		// côté qui dépasse 3 buts. On cherche d'abord dans le principal, puis
+		// dans les extensions pour les lignes restantes.
+		const found = [];
+		const remaining = new Set(wantLines);
+		for (const marketName of ['Correct Score', 'Correct Score 2 Home', 'Correct Score 2 Away']) {
+			if (!remaining.size) break;
+			const mid = mk(marketName);
+			if (!mid) continue;
+			const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => remaining.has(name));
+			if (sels) for (const s of sels) { found.push(s); remaining.delete(s.name); }
+		}
+		if (found.length !== wantLines.size) return null; // tout ou rien, comme pour Pinnacle
+		const probSum = found.reduce((sum, s) => sum + 1 / s.back, 0);
 		return probSum ? { decimal: 1 / probSum } : null;
 	}
 	if (leg.type === 'doubleChance' && homeAway) {
