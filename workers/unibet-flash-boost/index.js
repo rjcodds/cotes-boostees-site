@@ -2360,6 +2360,7 @@ const PIWI_COMPETITIONS_BY_SPORT = {
 		'9404054', // Netherlands - Eredivisie
 		'194215', // Turkey - Super League
 		'5627174', // Mexico - Liga MX
+		'340643', // England - Community Shield (one-off cup final, retrouvé via Betfair)
 	],
 	basketball: [
 		'11295025', // WNBA
