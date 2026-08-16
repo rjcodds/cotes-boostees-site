@@ -1606,6 +1606,26 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'playerCarded', player: playerCardedMatch[1].trim(), sport: sportKey }];
 	}
 
+	// "{Joueur} buteur et {Équipe} gagne" -- APPROXIMATION étiquetée (voir
+	// findPlayerScorerAndWinApprox côté Piwi) : marque et gagne ne sont pas
+	// indépendants (corrélation positive), donc le produit des deux marchés
+	// Piwi sous-estime la vraie probabilité conjointe -- c'est le combo qui a
+	// causé le bug original Salah/Trabzonspor (résolu à l'époque en le
+	// laissant silencieux ; maintenant qu'on a Piwi, un chiffre approximatif
+	// étiqueté vaut mieux que rien, à la demande explicite de l'utilisatrice).
+	const playerScorerAndWinMatch =
+		d.match(/^(.+?)\s+buteur\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i) ||
+		d.match(/^(.+?)\s+marque\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
+	if (playerScorerAndWinMatch) {
+		const playerCand = playerScorerAndWinMatch[1].trim();
+		const teamCand = playerScorerAndWinMatch[2].trim();
+		const team = isExactlyTeamName(teamA, teamCand) ? teamA : isExactlyTeamName(teamB, teamCand) ? teamB : null;
+		const playerIsTeam = isExactlyTeamName(teamA, playerCand) || isExactlyTeamName(teamB, playerCand);
+		if (team && !playerIsTeam) {
+			return [{ type: 'playerScorerAndWin', player: playerCand, team, sport: sportKey }];
+		}
+	}
+
 	// "{Joueur} buteur" -- marché Piwi direct "Player To Score" (aucun
 	// équivalent Pinnacle, voir la découverte du 2026-08-15 : Pinnacle n'a
 	// aucun marché buteur par match pour le foot, seulement un "Top
@@ -2658,6 +2678,19 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const probSum = sels.reduce((sum, s) => sum + 1 / s.back, 0);
 		return probSum ? { decimal: 1 / probSum } : null;
 	}
+	if (leg.type === 'playerScorerAndWin') {
+		// APPROXIMATION étiquetée : marque et gagne sont corrélés positivement
+		// (un but marqué par ce joueur rend la victoire de son équipe plus
+		// probable), donc multiplier les deux marchés indépendants SOUS-ESTIME
+		// la vraie probabilité conjointe -- exact:false, voir formatPiwiReference.
+		const scorerMid = mk('Player To Score');
+		const mlMid = mk(PIWI_MARKET_NAMES[leg.sport]?.moneyline);
+		if (!scorerMid || !mlMid) return null;
+		const scorerSels = await fetchPiwiSelections(scorerMid, piwiEvent.eventId, (name) => teamsMatch(name, leg.player));
+		const mlSels = await fetchPiwiSelections(mlMid, piwiEvent.eventId, (name) => teamsMatch(name, leg.team));
+		if (!scorerSels?.[0] || !mlSels?.[0]) return null;
+		return { decimal: scorerSels[0].back * mlSels[0].back, exact: false };
+	}
 	return null;
 }
 
@@ -2690,7 +2723,8 @@ function formatPiwiReference(piwiRef) {
 		return `♟️ Exchange (Piwi247, perso) : ${parts.join(' · ')}`;
 	}
 	if (piwiRef.decimal) {
-		return `♟️ Exchange (Piwi247, perso) : ${Number(piwiRef.decimal).toFixed(2)}`;
+		const approxTag = piwiRef.exact === false ? ' ⚠️ approximatif (corrélation non prise en compte)' : '';
+		return `♟️ Exchange (Piwi247, perso) : ${Number(piwiRef.decimal).toFixed(2)}${approxTag}`;
 	}
 	return null;
 }
