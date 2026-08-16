@@ -1590,6 +1590,16 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'playerScorer', player: cand, sport: sportKey }];
 	}
 
+	// "{Combattant} gagne par KO/TKO/DSQ ou Soumission" -- combo MMA (pas
+	// decision), marché Piwi direct "Method of Victory" (somme des deux
+	// sélections concernées, comme correctScore pour le foot). Aucun
+	// équivalent Pinnacle trouvé (mma:22 n'a pas ce special).
+	const methodOfVictoryMatch =
+		winningTeam && d.match(/gagne\s+par\s+KO[/,]?\s*TKO(?:[/,]?\s*DSQ)?\s+ou\s+Soumission\.?\s*$/i);
+	if (methodOfVictoryMatch) {
+		return [{ type: 'methodOfVictory', fighter: winningTeam, sport: sportKey }];
+	}
+
 	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?)/i);
 	// Deux formulations existent pour la marge de victoire : "gagne par/de N
 	// buts ou plus" et "gagne par au moins N buts d'écart".
@@ -2381,35 +2391,66 @@ async function fetchPiwiMarketPrices(marketId, eventId) {
 // /customer/api/sport/details/extra-time, protégé par x-csrf-token non
 // reverse-engineered malgré plusieurs tentatives). Liste volontairement
 // partielle -- à enrichir au fil des vraies cotes rencontrées.
-const PIWI_KNOWN_COMPETITIONS = [
-	'117', // Spain - La Liga
-	'10932509', // England - Premier League
-	'81', // Italy - Serie A
-	'59', // Germany - Bundesliga
-	'61', // Germany - Bundesliga 2
-	'55', // France - Ligue 1
-	'57', // France - Ligue 2
-	'7129730', // England - Championship
-	'228', // UEFA Champions League
-	'9404054', // Netherlands - Eredivisie
-	'194215', // Turkey - Super League
-	'5627174', // Mexico - Liga MX
-];
+// Compétitions Piwi connues, par sport -- calendrier complet sans jeton CSRF
+// (voir plus haut pourquoi la recherche générale n'est pas accessible).
+// Foot vérifié en profondeur ; basket et MMA juste amorcés (une ligue
+// chacun) -- à enrichir dès qu'une vraie cote d'un autre championnat/sport
+// ne trouve rien.
+const PIWI_COMPETITIONS_BY_SPORT = {
+	football: [
+		'117', // Spain - La Liga
+		'10932509', // England - Premier League
+		'81', // Italy - Serie A
+		'59', // Germany - Bundesliga
+		'61', // Germany - Bundesliga 2
+		'55', // France - Ligue 1
+		'57', // France - Ligue 2
+		'7129730', // England - Championship
+		'228', // UEFA Champions League
+		'9404054', // Netherlands - Eredivisie
+		'194215', // Turkey - Super League
+		'5627174', // Mexico - Liga MX
+	],
+	basketball: [
+		'11295025', // WNBA
+		'10547864', // NBA
+	],
+	mma: [
+		'10581356', // UFC Matches
+	],
+};
+
+// Noms de marchés Piwi pour moneyline/total -- diffèrent par sport ("Match
+// Odds"/"Goal Lines" en foot, "Moneyline"/"Total Points" en basket, "Fight
+// Result" en MMA -- pas de "total" en MMA). Vérifié en direct pour chaque
+// sport avant d'écrire quoi que ce soit.
+const PIWI_MARKET_NAMES = {
+	football: { moneyline: 'Match Odds', total: 'Goal Lines' },
+	basketball: { moneyline: 'Moneyline', total: 'Total Points' },
+	mma: { moneyline: 'Fight Result' },
+};
+
+// Le séparateur entre les deux participants dans le nom d'événement Piwi
+// varie par sport : " v " en foot/MMA, " @ " en basket (away @ home).
+const PIWI_EVENT_SEPARATORS = [' v ', ' @ '];
 
 function findEventInList(list, teamA, teamB) {
 	return (list || []).find((c) => {
-		if (c.type !== 'EVENT' || !c.name?.includes(' v ')) return false;
-		const [n1, n2] = c.name.split(' v ');
+		if (c.type !== 'EVENT') return false;
+		const sep = PIWI_EVENT_SEPARATORS.find((s) => c.name?.includes(s));
+		if (!sep) return false;
+		const [n1, n2] = c.name.split(sep);
 		return (teamsMatch(n1, teamA) && teamsMatch(n2, teamB)) || (teamsMatch(n1, teamB) && teamsMatch(n2, teamA));
 	});
 }
 
 // Cherche l'eventId par noms d'équipe : d'abord dans les compétitions
-// connues (calendrier complet), puis en repli sur /customer/api/popular
-// (grands événements du moment seulement -- peut être vide en heures
-// creuses, aucune couverture garantie hors grosses affiches).
-async function findPiwiEventId(teamA, teamB) {
-	for (const compId of PIWI_KNOWN_COMPETITIONS) {
+// connues DU SPORT concerné (calendrier complet), puis en repli sur
+// /customer/api/popular (grands événements du moment, tous sports
+// confondus -- peut être vide en heures creuses, aucune couverture garantie
+// hors grosses affiches).
+async function findPiwiEventId(teamA, teamB, sport) {
+	for (const compId of PIWI_COMPETITIONS_BY_SPORT[sport] || []) {
 		try {
 			const res = await fetch(`https://exch.piwi247.com/customer/api/competition/${compId}`, { headers: PIWI_HEADERS });
 			if (!res.ok) continue;
@@ -2432,8 +2473,8 @@ async function findPiwiEventId(teamA, teamB) {
 	return null;
 }
 
-async function findPiwiEvent(teamA, teamB) {
-	const eventId = await findPiwiEventId(teamA, teamB);
+async function findPiwiEvent(teamA, teamB, sport) {
+	const eventId = await findPiwiEventId(teamA, teamB, sport);
 	if (!eventId) return null;
 	try {
 		const res = await fetch(`https://exch.piwi247.com/customer/api/event/${eventId}`, { headers: PIWI_HEADERS });
@@ -2463,8 +2504,8 @@ function piwiMarketIdForTeamSuffix(piwiEvent, suffix, teamName) {
 // par la liste d'événements) -- récupérés une fois via Match Odds, réutilisés
 // pour tous les marchés qui dépendent de l'ordre home/away (Correct Score,
 // Double Chance).
-async function piwiHomeAway(piwiEvent) {
-	const mid = piwiMarketId(piwiEvent, 'Match Odds');
+async function piwiHomeAway(piwiEvent, sport = 'football') {
+	const mid = piwiMarketId(piwiEvent, PIWI_MARKET_NAMES[sport]?.moneyline || 'Match Odds');
 	if (!mid) return null;
 	try {
 		const res = await fetch(`https://exch.piwi247.com/customer/api/market/${mid}`, { headers: PIWI_HEADERS });
@@ -2519,7 +2560,9 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 	const isHome = (team) => homeAway && teamsMatch(homeAway.home, team);
 
 	if (leg.type === 'moneyline') {
-		const mid = mk('Match Odds');
+		// Nom du marché variable selon le sport : "Match Odds" (foot),
+		// "Moneyline" (basket), "Fight Result" (MMA, 2 côtés seulement).
+		const mid = mk(PIWI_MARKET_NAMES[leg.sport]?.moneyline);
 		if (!mid) return null;
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, () => true);
 		if (!sels) return null;
@@ -2527,7 +2570,9 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		return { decimal: backed ? backed.back : null, all: sels };
 	}
 	if (leg.type === 'total' && (leg.period || 0) === 0) {
-		const mid = mk('Goal Lines');
+		// "Goal Lines" (foot) / "Total Points" (basket) -- même structure
+		// consolidée multi-lignes dans les deux cas.
+		const mid = mk(PIWI_MARKET_NAMES[leg.sport]?.total);
 		if (!mid) return null;
 		// runnerName inclut le chiffre ("Over 2.5", pas juste "Over") -- on ne
 		// s'appuie que sur le préfixe + le handicap exact, pas une égalité
@@ -2667,6 +2712,24 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.player));
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
+	if (leg.type === 'methodOfVictory') {
+		// Somme de deux sélections ("{Fighter} by KO TKO or DQ" + "{Fighter} by
+		// Submission") -- marché Piwi "Method of Victory", nom du combattant
+		// abrégé au nom de famille dans le libellé Piwi ("Makhachev by..."), pas
+		// le nom complet -- teamsMatch absorbe ça (substring).
+		const mid = mk('Method of Victory');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => {
+			const idx = name.indexOf(' by ');
+			if (idx === -1) return false;
+			const fighter = name.slice(0, idx);
+			const method = name.slice(idx + 4);
+			return teamsMatch(fighter, leg.fighter) && (method === 'KO TKO or DQ' || method === 'Submission');
+		});
+		if (!sels || sels.length !== 2) return null; // tout ou rien
+		const probSum = sels.reduce((sum, s) => sum + 1 / s.back, 0);
+		return probSum ? { decimal: 1 / probSum } : null;
+	}
 	return null;
 }
 
@@ -2680,10 +2743,14 @@ async function findPiwiReference(legs, teamA, teamB) {
 	if (!legs || legs.length !== 1) return null;
 	const leg = legs[0];
 	if (leg.teamA && leg.teamA !== teamA && leg.teamB && leg.teamB !== teamB) return null; // leg d'un autre match (combo)
-	const piwiEvent = await findPiwiEvent(teamA, teamB);
+	// Sport pas encore exploré côté Piwi (pas de noms de marché confirmés) --
+	// silencieux plutôt que de tenter une recherche à l'aveugle avec des noms
+	// de marché foot qui n'existeraient pas pour ce sport.
+	if (!PIWI_MARKET_NAMES[leg.sport]) return null;
+	const piwiEvent = await findPiwiEvent(teamA, teamB, leg.sport);
 	if (!piwiEvent) return null;
 	const needsHomeAway = ['correctScore', 'doubleChance', 'htft'].includes(leg.type);
-	const homeAway = needsHomeAway ? await piwiHomeAway(piwiEvent) : null;
+	const homeAway = needsHomeAway ? await piwiHomeAway(piwiEvent, leg.sport) : null;
 	if (needsHomeAway && !homeAway) return null;
 	return resolvePiwiLeg(leg, piwiEvent, homeAway);
 }
@@ -2790,8 +2857,9 @@ export default {
 			const a = url.searchParams.get('a');
 			const b = url.searchParams.get('b');
 			const d = url.searchParams.get('d') || `${a} gagne`;
-			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description (optionnel)', { status: 400 });
-			const legs = parseLegs(`${a} - ${b}`, d, 'football');
+			const sport = url.searchParams.get('sport') || 'football';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description&sport=football (optionnel)', { status: 400 });
+			const legs = parseLegs(`${a} - ${b}`, d, sport);
 			const ref = await findPiwiReference(legs, a, b);
 			return new Response(JSON.stringify({ legs, ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
