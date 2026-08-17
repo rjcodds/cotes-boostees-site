@@ -419,6 +419,21 @@ function teamsMatch(a, b) {
 	return overlap >= Math.min(wordsA.length, wordsB.length) * 0.5;
 }
 
+// Identifie LE matchup racine (celui qui porte moneyline/total/team_total)
+// parmi tous les matchups renvoyés pour une league -- pas les props/spéciaux
+// (corners, cartons, écarts...) qui partagent souvent les mêmes noms
+// d'équipes. Avant le coup d'envoi, ce matchup racine n'a pas de parentId.
+// Une fois le match EN DIRECT, Pinnacle explose le match en plusieurs
+// matchups distincts (corners, handicaps, etc.) qui partagent tous le même
+// parentId (un simple conteneur sans marché propre, hasMarkets:false) -- il
+// faut alors se fier à periods[].hasMoneyline pour repérer le bon parmi eux.
+// Bug réel trouvé en essayant de rattraper une cote Championship en cours :
+// tout type de leg (pas seulement le nouveau) échouait silencieusement dès
+// qu'un match passait en direct, `!m.parentId` ne matchant plus rien.
+function isRootMatchup(m) {
+	return !m.parentId || Boolean(m.periods?.some((p) => p.hasMoneyline));
+}
+
 function americanToDecimal(american) {
 	return american > 0 ? american / 100 + 1 : 100 / Math.abs(american) + 1;
 }
@@ -782,7 +797,7 @@ function findBtts(leagues, teamA, teamB, period = 0) {
 	for (const { league, matchups, markets } of leagues) {
 		const parent = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -806,7 +821,7 @@ function findBttsAndTotal(leagues, teamA, teamB, side, points) {
 	for (const { league, matchups, markets } of leagues) {
 		const parent = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -828,7 +843,7 @@ function findOddEvenAndTotal(leagues, teamA, teamB, label, side, points) {
 	for (const { league, matchups, markets } of leagues) {
 		const parent = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -850,7 +865,7 @@ function findHalfTimeFullTime(leagues, teamA, teamB, htOutcome, ftOutcome) {
 	for (const { league, matchups, markets } of leagues) {
 		const parent = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -1065,7 +1080,7 @@ function findMoneyline(leagues, teamA, teamB, period = 0) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
-				!m.parentId && // exclut les marchés spéciaux/props (ex: "team to score first") qui
+				isRootMatchup(m) && // exclut les marchés spéciaux/props (ex: "team to score first") qui
 				// peuvent partager les mêmes noms d'équipes que le match principal
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
@@ -1083,7 +1098,7 @@ function findTotal(leagues, teamA, teamB, side, points, period = 0) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -1106,7 +1121,7 @@ function findTeamTotal(leagues, teamA, teamB, teamName, side, points, period = 0
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -1144,7 +1159,7 @@ function findBothWinASet(leagues, teamA, teamB) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
-				!m.parentId &&
+				isRootMatchup(m) &&
 				m.participants?.length === 2 &&
 				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
@@ -1220,6 +1235,35 @@ function parseLegs(eventName, description, sportKey) {
 		const oppNames = multiMoneylineMatch[3].split(/\s+et\s+/).map((s) => s.trim());
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
 			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, period, sport: sportKey }));
+		}
+	}
+
+	// Combo multi-matchs sur but d'une équipe : "TeamA et TeamB marquent chacun
+	// au moins N but(s) en première mi-temps/dans le match (respectivement
+	// contre OppA et OppB)" -- même structure que le combo victoire ci-dessus,
+	// mais "team_total over N-0.5" au lieu de moneyline. Piwi n'a pas de
+	// marché "but d'une équipe en 1ère mi-temps" (vérifié en direct sur
+	// Watford-Southampton et Burnley-West Ham, aucune ligue) -- Pinnacle
+	// uniquement pour ce type, pas d'approximation Piwi possible.
+	const multiTeamGoalMatch = d.match(
+		/(.+?)\s+marquent\s+chacun\s+au\s+moins\s+(\d+)\s*buts?\s+(dans\s+le\s+match|en\s+premiere\s+mi-?temps)\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiTeamGoalMatch) {
+		const period = /premiere/i.test(multiTeamGoalMatch[3]) ? 1 : 0;
+		const points = parseInt(multiTeamGoalMatch[2], 10) - 0.5;
+		const teamNames = multiTeamGoalMatch[1].split(/\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiTeamGoalMatch[4].split(/\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({
+				type: 'teamTotal',
+				team,
+				teamA: team,
+				teamB: oppNames[i],
+				side: 'over',
+				points,
+				period,
+				sport: sportKey,
+			}));
 		}
 	}
 
