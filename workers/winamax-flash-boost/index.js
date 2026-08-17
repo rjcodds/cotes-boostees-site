@@ -3010,10 +3010,16 @@ async function checkAndPost(env) {
 	const prevRaw = await env.SEEN_BOOSTS.get('current_snapshot');
 	const prevBoosts = prevRaw ? JSON.parse(prevRaw).boosts : null;
 
+	// TTL largement au-dessus de l'intervalle du cron (5 min) : si un check
+	// échoue (timeout Browser Rendering, cf. fetchPreloadedState plus haut),
+	// postMonitoringDiff saute silencieusement le diff dès que prevBoosts est
+	// absent -- un TTL trop court (15 min, soit seulement 3 checks ratés
+	// d'affilée) faisait perdre définitivement les ajouts de cette fenêtre,
+	// jamais rattrapés ensuite. 60 min tolère largement une mauvaise série.
 	await env.SEEN_BOOSTS.put(
 		'current_snapshot',
 		JSON.stringify({ updatedAt: Date.now(), boosts }),
-		{ expirationTtl: 15 * 60 }
+		{ expirationTtl: 60 * 60 }
 	);
 	await postMonitoringDiff(env, prevBoosts, boosts);
 	await refreshTrackedPinnacleRefs(env);

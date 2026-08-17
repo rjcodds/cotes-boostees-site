@@ -2929,10 +2929,14 @@ async function checkAndPost(env) {
 
 	// Instantané complet (toutes les cotes, pas seulement les éligibles flash) pour
 	// le tableau de suivi perso -- lu par /current, jamais re-scrapé à chaque visite.
+	// TTL largement au-dessus de l'intervalle du cron (1 min) : un TTL trop
+	// court fait sauter le diff de monitoring dès que prevBoosts expire après
+	// une série de checks ratés (voir même correctif côté Winamax, plus
+	// exposé car scraping par navigateur) -- 60 min tolère largement ça.
 	await env.SEEN_BOOSTS.put(
 		'current_snapshot',
 		JSON.stringify({ updatedAt: Date.now(), boosts }),
-		{ expirationTtl: 15 * 60 }
+		{ expirationTtl: 60 * 60 }
 	);
 	await postMonitoringDiff(env, prevBoosts, boosts);
 	await refreshTrackedPinnacleRefs(env);
