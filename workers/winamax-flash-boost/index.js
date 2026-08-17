@@ -868,6 +868,37 @@ function findDoubleChanceAndBttsApprox(leagues, teamName, side, teamA, teamB) {
 	return { league: dc.league, decimal: dc.decimal * btts.decimal, exact: false };
 }
 
+// "TeamX gagne et les deux équipes marquent" -- marché Pinnacle direct
+// (special "Both Teams To Score/Winner", même famille que
+// findBttsAndTotal/findOddEvenAndTotal ci-dessus), participants "Yes &
+// TeamX"/"No & TeamX"/"Yes & Draw"/"No & Draw". EXACT, pas une
+// approximation -- contrairement à findDoubleChanceAndBttsApprox qui
+// multiplie deux marchés indépendants faute de mieux.
+function findWinAndBtts(leagues, teamA, teamB, team) {
+	for (const { league, matchups, markets } of leagues) {
+		const parent = matchups.find(
+			(m) =>
+				isRootMatchup(m) &&
+				m.participants?.length === 2 &&
+				((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+		);
+		if (!parent) continue;
+		const special = matchups.find((s) => s.parentId === parent.id && s.special?.description === 'Both Teams To Score/Winner');
+		// "Yes & {Équipe}" -- on isole le nom après "Yes &" avant de comparer,
+		// sinon teamsMatch fuzzy-matche n'importe quelle équipe via le mot
+		// commun "Yes" partagé par tous les participants du marché.
+		const part = special?.participants?.find((p) => {
+			const suffixMatch = /^Yes\s*&\s*(.+)$/i.exec(p.name || '');
+			return suffixMatch && teamsMatch(suffixMatch[1], team);
+		});
+		const price = part ? priceForParticipant(markets, special.id, part.id) : null;
+		if (price == null) continue;
+		return { league: league.name, decimal: americanToDecimal(price), exact: true };
+	}
+	return null;
+}
+
 // Marché "Player Props" (catégorie "Player Props" chez Pinnacle) -- "{Joueur}
 // Total {Stat}" en Over/Under avec une ligne (prices[].points), pas un simple
 // Yes/No. Contrairement aux marchés par équipe, la ligne Pinnacle est fixée
@@ -1460,6 +1491,28 @@ function parseLegs(eventName, description, sportKey) {
 		if (htTeam && ftTeam) return [{ type: 'htft', htOutcome: htTeam, ftOutcome: ftTeam, teamA, teamB, sport: sportKey }];
 	}
 
+	// "TeamX gagne et les deux équipes marquent" -- combo direct chez Pinnacle
+	// ("Both Teams To Score/Winner" special, participants "Yes & TeamX"/"No &
+	// TeamX"/"Yes & Draw"/"No & Draw"), PAS juste "les 2 équipes marquent"
+	// seul. Bug réel trouvé sur une cote Cardiff City (4,50) affichée avec une
+	// ligne Piwi à 1,63 qui ne correspondait à rien -- le "TeamX gagne et"
+	// était silencieusement ignoré, la regex btts nue plus bas matchant sur
+	// simple sous-chaîne sans vérifier le préfixe victoire. Doit être vérifié
+	// AVANT le fallback btts seul juste en dessous.
+	if (winningTeam && /les\s+(?:2|deux)\s+equipes\s+marquent\b/i.test(d)) {
+		return [
+			{
+				type: 'winAndBtts',
+				team: winningTeam,
+				opponent: winningTeam === teamA ? teamB : teamA,
+				teamA,
+				teamB,
+				period: isFirstHalf ? 1 : 0,
+				sport: sportKey,
+			},
+		];
+	}
+
 	// "Les 2/deux équipes marquent" (même match, pas de combo multi-matchs --
 	// déjà géré plus haut) -- marché Pinnacle direct "Both Teams To Score?".
 	if (/les\s+(?:2|deux)\s+equipes\s+marquent\b/i.test(d)) {
@@ -1860,6 +1913,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'bttsAndTotal') {
 		return findBttsAndTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points);
+	}
+	if (leg.type === 'winAndBtts') {
+		return findWinAndBtts(leagues, leg.teamA, leg.teamB, leg.team);
 	}
 	if (leg.type === 'oddEvenAndTotal') {
 		return findOddEvenAndTotal(leagues, leg.teamA, leg.teamB, leg.label, leg.side, leg.points);
@@ -2705,6 +2761,18 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 			const idx = name.lastIndexOf('/');
 			if (idx === -1) return false;
 			return name.slice(idx + 1) === cond && teamsMatch(name.slice(0, idx), leg.team);
+		});
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'winAndBtts') {
+		// Marché "Match Odds and Both teams to Score" -- participants nommés
+		// "{Équipe}/Yes" ou "{Équipe}/No" (et "Draw/Yes", "Draw/No").
+		const mid = mk('Match Odds and Both teams to Score');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => {
+			const idx = name?.lastIndexOf('/');
+			if (idx == null || idx === -1) return false;
+			return name.slice(idx + 1) === 'Yes' && teamsMatch(name.slice(0, idx), leg.team);
 		});
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
