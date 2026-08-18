@@ -13,6 +13,21 @@ const MAX_STAKE_EUR = 10;
 const SEEN_TTL_SECONDS = 6 * 60 * 60; // 6h : évite de reposter la même cote à chaque poll
 const STAKE_RE = /mise max\s*(\d+)\s*€/i;
 
+// Journal d'erreurs persistant (KV, 7 jours) -- avant ça, un crash de check ou
+// un envoi Telegram raté n'était visible QUE via console.log en direct
+// (wrangler tail), donc invisible dès qu'on regarde après coup. Trouvé
+// nécessaire en creusant pourquoi une flash Winamax n'était jamais arrivée
+// dans le canal abonnés côté match du PSG, sans aucune preuve exploitable le
+// lendemain. Lu via /errors.
+async function logError(env, source, message) {
+	try {
+		const ts = Date.now();
+		await env.SEEN_BOOSTS.put(`errlog:${ts}`, JSON.stringify({ ts, source, message }), { expirationTtl: 7 * 24 * 60 * 60 });
+	} catch {
+		// rien de plus qu'on puisse faire si même le log échoue
+	}
+}
+
 const SPORT_EMOJI = {
 	football: '⚽', foot: '⚽', 'ligue 1': '⚽', 'ligue 2': '⚽', 'ligue europa': '⚽',
 	'champions league': '⚽', 'europa league': '⚽', 'conference league': '⚽',
@@ -2238,6 +2253,7 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 			}
 		} catch (e) {
 			console.log('postMonitoringDiff: sendToChat failed:', String(e));
+			await logError(env, 'postMonitoringDiff', String(e));
 		}
 		await new Promise((r) => setTimeout(r, 350)); // évite le flood control Telegram
 	}
@@ -3043,6 +3059,7 @@ async function checkAndPost(env) {
 			posted++;
 		} catch (e) {
 			console.log('checkAndPost: sendTelegramMessage failed for', boost.marketId, ':', String(e));
+			await logError(env, 'checkAndPost:send', `${boost.marketId}: ${String(e)}`);
 		}
 	}
 	return { checked: boosts.length, eligible: eligible.length, posted };
@@ -3114,16 +3131,32 @@ export default {
 			const ref = await findPiwiReference(legs, a, b);
 			return new Response(JSON.stringify({ legs, ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
+		if (url.pathname === '/errors') {
+			const list = await env.SEEN_BOOSTS.list({ prefix: 'errlog:' });
+			const entries = (await Promise.all(list.keys.map((k) => env.SEEN_BOOSTS.get(k.name))))
+				.filter(Boolean)
+				.map((e) => JSON.parse(e))
+				.sort((a, b) => b.ts - a.ts);
+			return new Response(JSON.stringify(entries), { headers: { 'Content-Type': 'application/json' } });
+		}
 		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
 
 	async scheduled(event, env, ctx) {
 		if (event.cron === '7 8 * * *') {
-			ctx.waitUntil(postDailyDigest(env).catch((e) => console.error('postDailyDigest failed:', e)));
+			ctx.waitUntil(
+				postDailyDigest(env).catch((e) => {
+					console.error('postDailyDigest failed:', e);
+					return logError(env, 'postDailyDigest', String(e));
+				})
+			);
 			return;
 		}
 		ctx.waitUntil(
-			checkAndPost(env).catch((e) => console.error('checkAndPost failed:', e))
+			checkAndPost(env).catch((e) => {
+				console.error('checkAndPost failed:', e);
+				return logError(env, 'checkAndPost', String(e));
+			})
 		);
 	},
 };

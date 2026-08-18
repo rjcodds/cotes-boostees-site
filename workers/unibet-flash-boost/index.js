@@ -12,6 +12,19 @@ const SEEN_TTL_SECONDS = 6 * 60 * 60; // 6h : évite de reposter la même cote �
 const STATE_SCRIPT_RE = /<script id="serverApp-state" type="application\/json">(.*?)<\/script>/s;
 const ODDS_RE = /\(([\d,]+)\s*(?:->|→)\s*([\d,]+)\s*\/\s*Mise max\s*(\d+)\s*€\)/;
 
+// Journal d'erreurs persistant (KV, 7 jours) -- avant ça, un crash de check ou
+// un envoi Telegram raté n'était visible QUE via console.log en direct
+// (wrangler tail), donc invisible dès qu'on regarde après coup. Même
+// correctif que côté Winamax. Lu via /errors.
+async function logError(env, source, message) {
+	try {
+		const ts = Date.now();
+		await env.SEEN_BOOSTS.put(`errlog:${ts}`, JSON.stringify({ ts, source, message }), { expirationTtl: 7 * 24 * 60 * 60 });
+	} catch {
+		// rien de plus qu'on puisse faire si même le log échoue
+	}
+}
+
 const SPORT_EMOJI = {
 	Football: '⚽',
 	Tennis: '🎾',
@@ -2243,31 +2256,42 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 	if (!env.MONITORING_CHAT_ID || !prevBoosts) return;
 	const events = diffBoosts(prevBoosts, currentBoosts);
 	for (const event of events) {
-		const { text, refLine, edge } = await formatMonitoringMessage(event);
-		const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
+		// try/catch PAR événement : sans ça (c'était le cas avant), un seul
+		// sendToChat qui échoue plantait TOUTE la fonction -- vu que
+		// checkAndPost enchaîne ensuite avec la boucle d'envoi des flash au
+		// canal abonnés, ça coupait aussi celle-ci pour le reste du check.
+		// Repéré en creusant pourquoi une flash Winamax manquait au canal
+		// abonnés côté match du PSG (même classe de bug, encore plus grave ici).
+		try {
+			const { text, refLine, edge } = await formatMonitoringMessage(event);
+			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 
-		if (event.type === 'add') {
-			if (refLine && sent?.message_id) {
-				// On garde de quoi revérifier et éditer ce message si la cote Pinnacle
-				// bouge avant le début du match (voir refreshTrackedPinnacleRefs).
-				await env.SEEN_BOOSTS.put(
-					`pintrack:${event.boost.marketId}`,
-					JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sent.message_id, boost: event.boost, lastRefLine: refLine }),
-					{ expirationTtl: PIN_TRACK_TTL_SECONDS }
-				);
+			if (event.type === 'add') {
+				if (refLine && sent?.message_id) {
+					// On garde de quoi revérifier et éditer ce message si la cote Pinnacle
+					// bouge avant le début du match (voir refreshTrackedPinnacleRefs).
+					await env.SEEN_BOOSTS.put(
+						`pintrack:${event.boost.marketId}`,
+						JSON.stringify({ chatId: env.MONITORING_CHAT_ID, messageId: sent.message_id, boost: event.boost, lastRefLine: refLine }),
+						{ expirationTtl: PIN_TRACK_TTL_SECONDS }
+					);
+				}
+				// Digest quotidien : toutes les cotes "classiques" suivies en monitoring,
+				// pas seulement le sous-ensemble flash (≤10€, dispo quelques minutes)
+				// qui part sur le canal public.
+				try {
+					await logDigestItem(env, event.boost, edge);
+				} catch {
+					// silencieux : le digest est une info secondaire
+				}
 			}
-			// Digest quotidien : toutes les cotes "classiques" suivies en monitoring,
-			// pas seulement le sous-ensemble flash (≤10€, dispo quelques minutes)
-			// qui part sur le canal public.
-			try {
-				await logDigestItem(env, event.boost, edge);
-			} catch {
-				// silencieux : le digest est une info secondaire
+			if (event.type === 'remove') {
+				// Le match est passé/le boost a disparu -- plus la peine de le revérifier.
+				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
 			}
-		}
-		if (event.type === 'remove') {
-			// Le match est passé/le boost a disparu -- plus la peine de le revérifier.
-			await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
+		} catch (e) {
+			console.log('postMonitoringDiff: sendToChat failed:', String(e));
+			await logError(env, 'postMonitoringDiff', String(e));
 		}
 
 		await new Promise((r) => setTimeout(r, 350)); // évite le flood control Telegram
@@ -2958,6 +2982,7 @@ async function checkAndPost(env) {
 			posted++;
 		} catch (e) {
 			console.log('checkAndPost: sendTelegramMessage failed for', boost.marketId, ':', String(e));
+			await logError(env, 'checkAndPost:send', `${boost.marketId}: ${String(e)}`);
 		}
 	}
 	return { checked: boosts.length, eligible: eligible.length, posted };
@@ -3031,10 +3056,23 @@ export default {
 			}
 			return new Response('OK', { status: 200 });
 		}
+		if (url.pathname === '/errors') {
+			const list = await env.SEEN_BOOSTS.list({ prefix: 'errlog:' });
+			const entries = (await Promise.all(list.keys.map((k) => env.SEEN_BOOSTS.get(k.name))))
+				.filter(Boolean)
+				.map((e) => JSON.parse(e))
+				.sort((a, b) => b.ts - a.ts);
+			return new Response(JSON.stringify(entries), { headers: { 'Content-Type': 'application/json' } });
+		}
 		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
 
 	async scheduled(event, env, ctx) {
-		ctx.waitUntil(checkAndPost(env));
+		ctx.waitUntil(
+			checkAndPost(env).catch((e) => {
+				console.error('checkAndPost failed:', e);
+				return logError(env, 'checkAndPost', String(e));
+			})
+		);
 	},
 };
