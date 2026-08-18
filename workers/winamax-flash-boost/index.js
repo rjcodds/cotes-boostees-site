@@ -1405,7 +1405,7 @@ function parseLegs(eventName, description, sportKey) {
 	// plus/moins de N buts" -- APPROXIMATION étiquetée (pas de marché direct
 	// Pinnacle, voir findDoubleChanceAndTotalApprox).
 	const dcTeamAndTotalMatch =
-		d.match(/^(.+?)\s+ou\s+(?:le\s+)?match\s+nul\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i) ||
+		d.match(/^(.+?)\s+(?:gagne\s+)?ou\s+(?:fait\s+)?(?:le\s+)?match\s+nul\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i) ||
 		d.match(/^double\s+chance\s*:?\s*(.+?)\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i);
 	if (dcTeamAndTotalMatch) {
 		const cand = dcTeamAndTotalMatch[1].trim();
@@ -1426,7 +1426,7 @@ function parseLegs(eventName, description, sportKey) {
 		}
 	}
 	const dcDrawAndTotalMatch = d.match(
-		/^(?:le\s+)?match\s+nul\s+ou\s+(.+?)\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i
+		/^(?:fait\s+)?(?:le\s+)?match\s+nul\s+ou\s+(.+?)\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?/i
 	);
 	if (dcDrawAndTotalMatch) {
 		const cand = dcDrawAndTotalMatch[1].trim();
@@ -1451,7 +1451,7 @@ function parseLegs(eventName, description, sportKey) {
 	// et les deux équipes marquent" -- APPROXIMATION étiquetée (idem, voir
 	// findDoubleChanceAndBttsApprox).
 	const dcTeamAndBttsMatch =
-		d.match(/^(.+?)\s+ou\s+(?:le\s+)?match\s+nul\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i) ||
+		d.match(/^(.+?)\s+(?:gagne\s+)?ou\s+(?:fait\s+)?(?:le\s+)?match\s+nul\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i) ||
 		d.match(/^double\s+chance\s*:?\s*(.+?)\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i);
 	if (dcTeamAndBttsMatch) {
 		const cand = dcTeamAndBttsMatch[1].trim();
@@ -1459,7 +1459,7 @@ function parseLegs(eventName, description, sportKey) {
 		if (team) return [{ type: 'doubleChanceAndBtts', team, side: 'teamOrDraw', teamA, teamB, sport: sportKey }];
 	}
 	const dcDrawAndBttsMatch = d.match(
-		/^(?:le\s+)?match\s+nul\s+ou\s+(.+?)\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i
+		/^(?:fait\s+)?(?:le\s+)?match\s+nul\s+ou\s+(.+?)\s+et\s+les\s+(?:2|deux)\s+equipes\s+marquent\b/i
 	);
 	if (dcDrawAndBttsMatch) {
 		const cand = dcDrawAndBttsMatch[1].trim();
@@ -1537,13 +1537,13 @@ function parseLegs(eventName, description, sportKey) {
 	// "TeamX ou match nul" / "Double chance TeamX" -> Pinnacle "TeamX Or Draw" ;
 	// "Match nul ou TeamY" -> "Draw Or TeamY". Marché "Double Chance" direct.
 	const teamOrDrawMatch =
-		d.match(/^(.+?)\s+ou\s+(?:le\s+)?match\s+nul\.?\s*$/i) || d.match(/^double\s+chance\s*:?\s*(.+?)\.?\s*$/i);
+		d.match(/^(.+?)\s+(?:gagne\s+)?ou\s+(?:fait\s+)?(?:le\s+)?match\s+nul\.?\s*$/i) || d.match(/^double\s+chance\s*:?\s*(.+?)\.?\s*$/i);
 	if (teamOrDrawMatch) {
 		const cand = teamOrDrawMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
 		if (team) return [{ type: 'doubleChance', team, side: 'teamOrDraw', period: isFirstHalf ? 1 : 0, sport: sportKey }];
 	}
-	const drawOrTeamMatch = d.match(/^(?:le\s+)?match\s+nul\s+ou\s+(.+?)\.?\s*$/i);
+	const drawOrTeamMatch = d.match(/^(?:fait\s+)?(?:le\s+)?match\s+nul\s+ou\s+(.+?)\.?\s*$/i);
 	if (drawOrTeamMatch) {
 		const cand = drawOrTeamMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
@@ -3113,6 +3113,36 @@ function matchbookMarket(markets, name, type) {
 	return markets.find((m) => m.name === name && (!type || m['market-type'] === type));
 }
 
+// Helpers réutilisés à la fois par leur leg direct (total/btts/doubleChance)
+// et par les approximations combinées (doubleChanceAndTotal/AndBtts, pas de
+// marché direct chez Matchbook pour ces combos-là).
+function matchbookTotalPrice(markets, side, points) {
+	const m = markets.find((mk) => mk.name === 'Total' && mk['market-type'] === 'total' && mk.handicap === points);
+	if (!m) return null;
+	const wantName = side === 'over' ? `OVER ${points}` : `UNDER ${points}`;
+	const r = m.runners.find((rr) => rr.name === wantName);
+	return r ? matchbookBestBack(r) : null;
+}
+function matchbookBttsPrice(markets) {
+	const m = matchbookMarket(markets, 'Both Teams To Score', 'both_to_score');
+	if (!m) return null;
+	const r = m.runners.find((rr) => rr.name === 'Yes');
+	return r ? matchbookBestBack(r) : null;
+}
+function matchbookDoubleChancePrice(markets, team) {
+	const m = matchbookMarket(markets, 'Double Chance');
+	if (!m) return null;
+	// Runners "TeamX or Draw" / "Draw or TeamY" / "TeamX or TeamY" -- on veut
+	// celui qui combine l'équipe cherchée ET "Draw", peu importe l'ordre.
+	const r = m.runners.find((rr) => {
+		const n = rr.name || '';
+		if (!/draw/i.test(n)) return false;
+		const other = n.replace(/\s*or\s*draw/i, '').replace(/draw\s*or\s*/i, '').trim();
+		return teamsMatch(other, team);
+	});
+	return r ? matchbookBestBack(r) : null;
+}
+
 // Résout UNE leg déjà analysée (même structure que resolvePiwiLeg) contre
 // les marchés Matchbook d'un événement déjà localisé. Les marchés sont déjà
 // embarqués dans la réponse de /edge/rest/events (mbEvent.markets) -- PAS de
@@ -3135,11 +3165,7 @@ function resolveMatchbookLeg(leg, mbEvent) {
 		return { decimal: wanted?.back, all };
 	}
 	if (leg.type === 'total' && (leg.period || 0) === 0) {
-		const m = markets.find((mk) => mk.name === 'Total' && mk['market-type'] === 'total' && mk.handicap === leg.points);
-		if (!m) return null;
-		const wantName = leg.side === 'over' ? `OVER ${leg.points}` : `UNDER ${leg.points}`;
-		const r = m.runners.find((rr) => rr.name === wantName);
-		const back = r ? matchbookBestBack(r) : null;
+		const back = matchbookTotalPrice(markets, leg.side, leg.points);
 		return back ? { decimal: back } : null;
 	}
 	if (leg.type === 'total' && leg.period === 1) {
@@ -3191,10 +3217,7 @@ function resolveMatchbookLeg(leg, mbEvent) {
 		return probSum ? { decimal: 1 / probSum } : null;
 	}
 	if (leg.type === 'btts' && (leg.period || 0) === 0) {
-		const m = matchbookMarket(markets, 'Both Teams To Score', 'both_to_score');
-		if (!m) return null;
-		const r = m.runners.find((rr) => rr.name === 'Yes');
-		const back = r ? matchbookBestBack(r) : null;
+		const back = matchbookBttsPrice(markets);
 		return back ? { decimal: back } : null;
 	}
 	if (leg.type === 'winToNil') {
@@ -3215,18 +3238,23 @@ function resolveMatchbookLeg(leg, mbEvent) {
 		return back ? { decimal: back } : null;
 	}
 	if (leg.type === 'doubleChance') {
-		const m = matchbookMarket(markets, 'Double Chance');
-		if (!m) return null;
-		// Runners "TeamX or Draw" / "Draw or TeamY" / "TeamX or TeamY" -- on
-		// veut celui qui combine l'équipe cherchée ET "Draw", peu importe l'ordre.
-		const r = m.runners.find((rr) => {
-			const n = rr.name || '';
-			if (!/draw/i.test(n)) return false;
-			const other = n.replace(/\s*or\s*draw/i, '').replace(/draw\s*or\s*/i, '').trim();
-			return teamsMatch(other, leg.team);
-		});
-		const back = r ? matchbookBestBack(r) : null;
+		const back = matchbookDoubleChancePrice(markets, leg.team);
 		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'doubleChanceAndTotal') {
+		// Pas de marché combiné direct chez Matchbook -- approximation en
+		// multipliant Double Chance × Total (deux marchés indépendants, même
+		// principe que findDoubleChanceAndTotalApprox côté Pinnacle).
+		const dc = matchbookDoubleChancePrice(markets, leg.team);
+		const total = matchbookTotalPrice(markets, leg.totalSide, leg.points);
+		if (!dc || !total) return null;
+		return { decimal: dc * total, exact: false };
+	}
+	if (leg.type === 'doubleChanceAndBtts') {
+		const dc = matchbookDoubleChancePrice(markets, leg.team);
+		const btts = matchbookBttsPrice(markets);
+		if (!dc || !btts) return null;
+		return { decimal: dc * btts, exact: false };
 	}
 	if (leg.type === 'drawNoBet' && (leg.period || 0) === 0) {
 		const m = matchbookMarket(markets, 'Draw No Bet');
@@ -3297,7 +3325,8 @@ function formatMatchbookReference(ref) {
 		return `📗 Exchange (Matchbook, perso) : ${parts.join(' · ')}`;
 	}
 	if (ref.decimal) {
-		return `📗 Exchange (Matchbook, perso) : ${Number(ref.decimal).toFixed(2)}`;
+		const approxTag = ref.exact === false ? ' ⚠️ approximatif (corrélation non prise en compte)' : '';
+		return `📗 Exchange (Matchbook, perso) : ${Number(ref.decimal).toFixed(2)}${approxTag}`;
 	}
 	return null;
 }
