@@ -1855,13 +1855,23 @@ function extractWinner(d) {
 // le nom de l'équipe "Trabzonspor" juste parce que la chaîne se termine par
 // ce nom, et un pari combiné but+victoire se fait passer pour une simple
 // victoire (mauvaise cote de référence, pire qu'aucune référence).
-function isExactlyTeamName(candidate, teamName) {
-	const nc = normalizeTeam(candidate);
-	const nt = normalizeTeam(teamName);
+// Appelé PARTOUT comme isExactlyTeamName(nomEquipeComplet, texteExtrait) --
+// le 1er argument est le vrai nom (roster), le 2e le texte extrait de la
+// description (parfois abrégé, parfois un morceau de combo mal découpé).
+function isExactlyTeamName(fullName, extracted) {
+	const nc = normalizeTeam(fullName);
+	const nt = normalizeTeam(extracted);
 	if (!nc || !nt) return false;
 	if (nc === nt) return true;
-	if (Math.abs(nc.length - nt.length) > 4) return false; // texte bien plus long -> suspect
-	return teamsMatch(candidate, teamName);
+	// Un texte extrait bien plus LONG que le nom complet est suspect (combo
+	// mal découpé qui contient le nom en plus d'autre chose, ex: le bug
+	// Salah/Trabzonspor). Bien plus COURT est normal (prénom abrégé façon
+	// Winamax : "D. Medvedev" vs "Daniil Medvedev") -- ne doit PAS être
+	// rejeté avant même d'essayer le fuzzy match. Bug réel trouvé sur
+	// "D. Medvedev gagne 2-1" qui ne parsait pas du tout (le sens du test
+	// était inversé, il rejetait justement les abréviations légitimes).
+	if (nt.length - nc.length > 4) return false;
+	return teamsMatch(fullName, extracted);
 }
 
 function splitTeams(eventName) {
