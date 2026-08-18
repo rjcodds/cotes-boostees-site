@@ -3031,9 +3031,19 @@ async function checkAndPost(env) {
 		const already = await env.SEEN_BOOSTS.get(key);
 		if (already) continue;
 
-		await sendTelegramMessage(env, formatTelegramMessage(boost));
-		await env.SEEN_BOOSTS.put(key, '1', { expirationTtl: SEEN_TTL_SECONDS });
-		posted++;
+		// try/catch PAR cote : sans ça, un seul envoi qui échoue (Telegram
+		// rate-limit, hoquet réseau...) faisait planter toute la boucle --
+		// TOUTES les flash suivantes de ce même check étaient alors ignorées
+		// silencieusement, pas seulement celle en échec. Repéré en creusant
+		// pourquoi une flash Winamax attendue n'était jamais arrivée dans le
+		// canal abonnés côté match du PSG.
+		try {
+			await sendTelegramMessage(env, formatTelegramMessage(boost));
+			await env.SEEN_BOOSTS.put(key, '1', { expirationTtl: SEEN_TTL_SECONDS });
+			posted++;
+		} catch (e) {
+			console.log('checkAndPost: sendTelegramMessage failed for', boost.marketId, ':', String(e));
+		}
 	}
 	return { checked: boosts.length, eligible: eligible.length, posted };
 }
