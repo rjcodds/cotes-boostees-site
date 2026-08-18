@@ -2245,6 +2245,20 @@ async function formatMonitoringMessage(event) {
 		} catch {
 			// silencieux
 		}
+		// Référence exchange Matchbook, même principe que Piwi juste au-dessus
+		// (usage perso, jamais republiée aux abonnés) -- deuxième source
+		// indépendante, utile pour comparer/prendre la cote la plus haute.
+		try {
+			const teams = splitTeams(boost.eventName);
+			if (teams) {
+				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+				const matchbookRef = await findMatchbookReference(legs, teams[0], teams[1]);
+				const matchbookLine = formatMatchbookReference(matchbookRef);
+				if (matchbookLine) lines.push(matchbookLine);
+			}
+		} catch {
+			// silencieux
+		}
 	}
 
 	return { text: lines.join('\n'), refLine, edge };
@@ -2343,16 +2357,18 @@ async function backfillPinnacleRefs(env) {
 			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
 			const pinnacleLine = formatPinnacleReference(ref, parseFrenchDecimal(boost.newOdds));
 			let piwiLine = null;
+			let matchbookLine = null;
 			try {
 				const teams = splitTeams(boost.eventName);
 				if (teams) {
 					const legs = parseLegs(boost.eventName, boost.description, boost.sport);
 					piwiLine = formatPiwiReference(await findPiwiReference(legs, teams[0], teams[1]));
+					matchbookLine = formatMatchbookReference(await findMatchbookReference(legs, teams[0], teams[1]));
 				}
 			} catch {
 				// silencieux
 			}
-			const refLine = [pinnacleLine, piwiLine].filter(Boolean).join('\n');
+			const refLine = [pinnacleLine, piwiLine, matchbookLine].filter(Boolean).join('\n');
 			if (!refLine) continue;
 
 			const existingRaw = await env.SEEN_BOOSTS.get(trackKey);
@@ -2932,6 +2948,274 @@ function formatPiwiReference(piwiRef) {
 	return null;
 }
 
+// --- Matchbook (exchange, REST public, AUCUNE authentification nécessaire
+// pour lire prix/marchés -- vérifié en direct sur des matchs réels avec
+// vraie profondeur de marché, ex: Elche-Barcelone). Complément à Piwi/
+// Betfair : bien plus simple à interroger (REST pur, carnet d'ordres complet
+// dans une seule réponse -- pas de protocole WebSocket custom comme Piwi) et
+// surtout, résout le problème du tennis : Piwi exige de deviner l'ID du
+// tournoi de la semaine, ici un simple filtre sport-id liste TOUS les matchs
+// de tennis en cours en un seul appel, aucune compétition à chercher.
+// Portée volontairement plus restreinte que Piwi pour l'instant : pas de
+// props joueurs (absents des marchés exchange Matchbook, vérifié sur
+// plusieurs matchs), couvre les types les plus fréquents vus sur de vraies
+// cotes Unibet/Winamax cette session -- à enrichir si un vrai boost révèle
+// un trou.
+const MATCHBOOK_HEADERS = {
+	Accept: 'application/json',
+	'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+};
+const MATCHBOOK_SPORT_IDS = { football: 15, tennis: 9, basketball: 4, baseball: 3, hockey: 6, mma: 126 };
+// Séparateur entre participants dans le nom d'événement -- " vs " (foot,
+// tennis, MMA) ou " at " (basket/baseball, away at home, même convention que
+// Piwi : le participant AVANT "at" est l'extérieur, celui APRÈS est le
+// domicile).
+const MATCHBOOK_EVENT_SEPARATORS = [' vs ', ' at '];
+
+let matchbookEventsCache = {};
+const MATCHBOOK_CACHE_TTL_MS = 60 * 1000;
+async function fetchMatchbookEvents(sport) {
+	const sportId = MATCHBOOK_SPORT_IDS[sport];
+	if (!sportId) return [];
+	const cached = matchbookEventsCache[sport];
+	if (cached && Date.now() - cached.at < MATCHBOOK_CACHE_TTL_MS) return cached.events;
+	try {
+		const res = await fetch(`https://api.matchbook.com/edge/rest/events?sport-ids=${sportId}&per-page=500`, {
+			headers: MATCHBOOK_HEADERS,
+		});
+		if (!res.ok) return [];
+		const data = await res.json();
+		const events = data.events || [];
+		matchbookEventsCache[sport] = { events, at: Date.now() };
+		return events;
+	} catch {
+		return [];
+	}
+}
+
+function findMatchbookEventInList(list, teamA, teamB) {
+	for (const sep of MATCHBOOK_EVENT_SEPARATORS) {
+		for (const ev of list) {
+			const parts = (ev.name || '').split(sep);
+			if (parts.length !== 2) continue;
+			const [p1, p2] = parts.map((s) => s.trim());
+			const home = sep === ' at ' ? p2 : p1;
+			const away = sep === ' at ' ? p1 : p2;
+			if ((teamsMatch(home, teamA) && teamsMatch(away, teamB)) || (teamsMatch(home, teamB) && teamsMatch(away, teamA))) {
+				return { ...ev, home, away };
+			}
+		}
+	}
+	return null;
+}
+
+async function findMatchbookEvent(teamA, teamB, sport) {
+	const list = await fetchMatchbookEvents(sport);
+	return findMatchbookEventInList(list, teamA, teamB);
+}
+
+// Meilleur prix "back" disponible pour un runner -- plusieurs paliers de
+// carnet d'ordres possibles, on prend le meilleur (le plus haut), pas juste
+// le premier de la liste.
+function matchbookBestBack(runner) {
+	const backs = (runner.prices || []).filter((p) => p.side === 'back');
+	if (!backs.length) return null;
+	return Math.max(...backs.map((p) => Number(p['decimal-odds'] ?? p.odds)));
+}
+
+function matchbookMarket(markets, name, type) {
+	return markets.find((m) => m.name === name && (!type || m['market-type'] === type));
+}
+
+// Résout UNE leg déjà analysée (même structure que resolvePiwiLeg) contre
+// les marchés Matchbook d'un événement déjà localisé. Les marchés sont déjà
+// embarqués dans la réponse de /edge/rest/events (mbEvent.markets) -- PAS de
+// second appel vers /events/{id}/markets, qui s'est avéré renvoyer un
+// résultat vide/désynchronisé pour un événement fraîchement modifié (bug
+// trouvé en vérifiant en direct : le second endpoint retournait 0 marché
+// pour un ID pourtant valide et déjà garni côté liste).
+function resolveMatchbookLeg(leg, mbEvent) {
+	const markets = mbEvent.markets || [];
+	const isHome = (team) => teamsMatch(mbEvent.home, team);
+	const moneylineType = leg.sport === 'football' ? 'one_x_two' : 'money_line';
+	const moneylineName = leg.sport === 'football' ? 'Match Odds' : 'Moneyline';
+
+	if (leg.type === 'moneyline' && (leg.period || 0) === 0) {
+		const m = matchbookMarket(markets, moneylineName, moneylineType);
+		if (!m) return null;
+		const all = m.runners.map((r) => ({ name: r.name, back: matchbookBestBack(r) })).filter((r) => r.back);
+		if (!all.length) return null;
+		const wanted = leg.team ? all.find((r) => teamsMatch(r.name, leg.team)) : null;
+		return { decimal: wanted?.back, all };
+	}
+	if (leg.type === 'total' && (leg.period || 0) === 0) {
+		const m = markets.find((mk) => mk.name === 'Total' && mk['market-type'] === 'total' && mk.handicap === leg.points);
+		if (!m) return null;
+		const wantName = leg.side === 'over' ? `OVER ${leg.points}` : `UNDER ${leg.points}`;
+		const r = m.runners.find((rr) => rr.name === wantName);
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'total' && leg.period === 1) {
+		const m = markets.find((mk) => mk.name === '1st Half Total' && mk['market-type'] === 'total' && mk.handicap === leg.points);
+		if (!m) return null;
+		const wantName = leg.side === 'over' ? `OVER ${leg.points}` : `UNDER ${leg.points}`;
+		const r = m.runners.find((rr) => rr.name === wantName);
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'margin') {
+		// Synonyme via Handicap, même logique que Piwi (Asian Handicap) :
+		// "gagne par N buts ou plus" = "couvre le handicap -(N-0.5)". MAIS
+		// contrairement à Piwi, le champ market.handicap chez Matchbook est
+		// TOUJOURS positif (une magnitude) -- le signe n'existe que dans le nom
+		// du runner ("FC Barcelona -1.5" / "Elche CF +1.5"), pas dans un champ
+		// numérique séparé. On construit donc le nom exact attendu directement.
+		const wantHandicap = -(leg.margin - 0.5);
+		const wantSuffix = `${wantHandicap < 0 ? '-' : '+'}${Math.abs(wantHandicap).toFixed(1)}`;
+		for (const m of markets) {
+			if (m.name !== 'Handicap' || m['market-type'] !== 'handicap') continue;
+			const r = m.runners.find((rr) => {
+				const name = rr.name || '';
+				if (!name.endsWith(wantSuffix)) return false;
+				return teamsMatch(name.slice(0, name.length - wantSuffix.length).trim(), leg.team);
+			});
+			const back = r ? matchbookBestBack(r) : null;
+			if (back) return { decimal: back };
+		}
+		return null;
+	}
+	if (leg.type === 'correctScore' && (leg.period || 0) === 0) {
+		const m = matchbookMarket(markets, 'Correct Score', 'correct_score');
+		if (!m) return null;
+		const teamIsHome = isHome(leg.team);
+		// Format "X-Y" SANS espaces (différent de Piwi "X - Y") -- pas de
+		// repli "ANY OTHER X WIN" pour les scores hors 0-3 : ce runner regroupe
+		// plusieurs scores possibles, l'utiliser surestimerait un score exact
+		// précis (ex: 4-1). Silencieux dans ce cas plutôt qu'un chiffre faux.
+		const wantLines = new Set(
+			leg.scoreLines.map(([teamScore, oppScore]) => (teamIsHome ? `${teamScore}-${oppScore}` : `${oppScore}-${teamScore}`))
+		);
+		const found = m.runners.filter((r) => wantLines.has(r.name));
+		if (found.length !== wantLines.size) return null;
+		const probSum = found.reduce((sum, r) => {
+			const back = matchbookBestBack(r);
+			return back ? sum + 1 / back : sum;
+		}, 0);
+		return probSum ? { decimal: 1 / probSum } : null;
+	}
+	if (leg.type === 'btts' && (leg.period || 0) === 0) {
+		const m = matchbookMarket(markets, 'Both Teams To Score', 'both_to_score');
+		if (!m) return null;
+		const r = m.runners.find((rr) => rr.name === 'Yes');
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'winToNil') {
+		const name = isHome(leg.team) ? 'Home Team To Win To Nil' : 'Away Team To Win To Nil';
+		const m = matchbookMarket(markets, name);
+		if (!m) return null;
+		const r = m.runners.find((rr) => rr.name === 'Yes');
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'teamTotal' && (leg.period || 0) === 0) {
+		const name = isHome(leg.team) ? 'Home Team Total Goals' : 'Away Team Total Goals';
+		const m = markets.find((mk) => mk.name === name && mk.handicap === leg.points);
+		if (!m) return null;
+		const wantName = leg.side === 'over' ? `OVER ${leg.points}` : `UNDER ${leg.points}`;
+		const r = m.runners.find((rr) => rr.name === wantName);
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'doubleChance') {
+		const m = matchbookMarket(markets, 'Double Chance');
+		if (!m) return null;
+		// Runners "TeamX or Draw" / "Draw or TeamY" / "TeamX or TeamY" -- on
+		// veut celui qui combine l'équipe cherchée ET "Draw", peu importe l'ordre.
+		const r = m.runners.find((rr) => {
+			const n = rr.name || '';
+			if (!/draw/i.test(n)) return false;
+			const other = n.replace(/\s*or\s*draw/i, '').replace(/draw\s*or\s*/i, '').trim();
+			return teamsMatch(other, leg.team);
+		});
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'drawNoBet' && (leg.period || 0) === 0) {
+		const m = matchbookMarket(markets, 'Draw No Bet');
+		if (!m) return null;
+		const r = m.runners.find((rr) => teamsMatch(rr.name, leg.team));
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'htft') {
+		const m = matchbookMarket(markets, 'Half Time/Full Time', 'half_time_full_time');
+		if (!m) return null;
+		// Format "TEAM/TEAM" tout en majuscules (ex: "FC BARCELONA/DRAW").
+		const outcomeMatches = (outcome, side) => (outcome === 'Draw' ? side === 'DRAW' : teamsMatch(side, outcome));
+		const r = m.runners.find((rr) => {
+			const [ht, ft] = (rr.name || '').split('/');
+			return outcomeMatches(leg.htOutcome, ht) && outcomeMatches(leg.ftOutcome, ft);
+		});
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'winAndTotal') {
+		const m = markets.find((mk) => mk.name === 'Match Result and Total Goals' && mk.handicap === leg.points);
+		if (!m) return null;
+		const cond = leg.side === 'over' ? `Over ${leg.points}` : `Under ${leg.points}`;
+		const r = m.runners.find((rr) => {
+			const idx = (rr.name || '').indexOf(' and ');
+			if (idx === -1) return false;
+			return rr.name.slice(idx + 5) === cond && teamsMatch(rr.name.slice(0, idx), leg.team);
+		});
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'winAndBtts') {
+		const m = matchbookMarket(markets, 'Match Result and Both Teams To Score');
+		if (!m) return null;
+		const r = m.runners.find((rr) => {
+			const idx = (rr.name || '').indexOf(' and ');
+			if (idx === -1) return false;
+			return rr.name.slice(idx + 5) === 'Yes' && teamsMatch(rr.name.slice(0, idx), leg.team);
+		});
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'oddEvenTotal' && (leg.period || 0) === 0) {
+		const m = matchbookMarket(markets, 'Odd or Even Total');
+		if (!m) return null;
+		const r = m.runners.find((rr) => rr.name === leg.label);
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
+	return null;
+}
+
+async function findMatchbookReference(legs, teamA, teamB) {
+	if (!legs || legs.length !== 1) return null; // pas de combo multi-matchs pour l'instant
+	const leg = legs[0];
+	if (leg.teamA && leg.teamA !== teamA && leg.teamB && leg.teamB !== teamB) return null; // leg d'un autre match (combo)
+	if (!MATCHBOOK_SPORT_IDS[leg.sport]) return null;
+	const mbEvent = await findMatchbookEvent(teamA, teamB, leg.sport);
+	if (!mbEvent) return null;
+	return resolveMatchbookLeg(leg, mbEvent);
+}
+
+function formatMatchbookReference(ref) {
+	if (!ref) return null;
+	if (ref.all) {
+		const parts = ref.all.map((r) => `${r.name} : ${Number(r.back).toFixed(2)}`);
+		return `📗 Exchange (Matchbook, perso) : ${parts.join(' · ')}`;
+	}
+	if (ref.decimal) {
+		return `📗 Exchange (Matchbook, perso) : ${Number(ref.decimal).toFixed(2)}`;
+	}
+	return null;
+}
+
 async function checkAndPost(env) {
 	const res = await fetch(UNIBET_URL, {
 		headers: {
@@ -3017,6 +3301,16 @@ export default {
 			const legs = parseLegs(`${a} - ${b}`, d, sport);
 			const ref = await findPiwiReference(legs, a, b);
 			return new Response(JSON.stringify({ legs, ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-matchbook-teams') {
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			const d = url.searchParams.get('d') || `${a} gagne`;
+			const sport = url.searchParams.get('sport') || 'football';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description (optionnel)&sport=football', { status: 400 });
+			const legs = parseLegs(`${a} - ${b}`, d, sport);
+			const ref = await findMatchbookReference(legs, a, b);
+			return new Response(JSON.stringify({ legs, ref, line: formatMatchbookReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/digest-data') {
 			const date = url.searchParams.get('date') || todayKey();
