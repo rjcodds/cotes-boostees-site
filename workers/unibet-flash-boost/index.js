@@ -1323,19 +1323,55 @@ function parseLegs(eventName, description, sportKey) {
 		if (legs.length >= 2) return legs;
 	}
 
+	// Combo multi-matchs sur "plus de N,5 sets" (tennis, best-of-3) -- même
+	// forme que multiTotalMatch juste au-dessus, mais unité "sets" : pas de
+	// marché Over/Under numérique pour ça, "plus de 2,5 sets" = le match va
+	// au 3e set = EXACTEMENT le marché bothWinASet déjà câblé (Piwi "Number of
+	// Sets" -> "Three Sets" / Pinnacle "Total Sets" > 2.5) -- on réutilise ce
+	// type leg par leg plutôt que d'en inventer un nouveau.
+	const multiSetsMatch = d.match(
+		/plus\s+de\s+(\d+(?:[.,]\d+)?)\s*sets?\s+(?:lors de |dans )?chacun des matchs suivants\s*:\s*(.+)/i
+	);
+	if (multiSetsMatch) {
+		const pairs = multiSetsMatch[2]
+			.split(/,\s*|\s+et\s+/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		const legs = [];
+		for (const pair of pairs) {
+			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s*-\s*([A-ZÀ-Ý][\w .'-]*?)$/);
+			if (!m2) continue;
+			legs.push({ type: 'bothWinASet', teamA: m2[1].trim(), teamB: m2[2].trim(), sport: sportKey });
+		}
+		if (legs.length >= 2) return legs;
+	}
+
 	// Combo multi-matchs sur victoire simple : "TeamA et TeamB gagnent chacun
 	// leur match (respectivement contre OppA et OppB)" -- pas de total/marge,
 	// juste une victoire par match, matchs différents = indépendants. Variante
 	// "la première mi-temps" -> même marché Pinnacle "moneyline" mais period 1.
 	const multiMoneylineMatch = d.match(
-		/(.+?)\s+gagnent\s+chacun\s+(leur\s+match|la\s+premiere\s+mi-?temps)\s*\(respectivement\s+contre\s+(.+?)\)/i
+		/(.+?)\s+gagnent\s+chacune?\s+(leur\s+match|la\s+premiere\s+mi-?temps)\s*\(respectivement\s+contre\s+(.+?)\)/i
 	);
 	if (multiMoneylineMatch) {
 		const period = /premiere/i.test(multiMoneylineMatch[2]) ? 1 : 0;
-		const teamNames = multiMoneylineMatch[1].split(/\s+et\s+/).map((s) => s.trim());
-		const oppNames = multiMoneylineMatch[3].split(/\s+et\s+/).map((s) => s.trim());
+		const teamNames = multiMoneylineMatch[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiMoneylineMatch[3].split(/,\s*|\s+et\s+/).map((s) => s.trim());
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
 			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, period, sport: sportKey }));
+		}
+	}
+	// Même forme, mais "gagnent chacun(e) le 1er/premier set" (tennis) --
+	// combo multi-matchs pour winsSet1 (gagne spécifiquement le 1er set, voir
+	// sa définition single-match plus haut).
+	const multiWinsSet1Match = d.match(
+		/(.+?)\s+gagnent\s+chacune?\s+le\s+(?:premier|1(?:er|ere|ère)?)\s+set\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiWinsSet1Match) {
+		const teamNames = multiWinsSet1Match[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiWinsSet1Match[2].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({ type: 'winsSet1', teamA: team, teamB: oppNames[i], team, sport: sportKey }));
 		}
 	}
 
@@ -1352,8 +1388,8 @@ function parseLegs(eventName, description, sportKey) {
 	if (multiTeamGoalMatch) {
 		const period = /premiere/i.test(multiTeamGoalMatch[3]) ? 1 : 0;
 		const points = parseInt(multiTeamGoalMatch[2], 10) - 0.5;
-		const teamNames = multiTeamGoalMatch[1].split(/\s+et\s+/).map((s) => s.trim());
-		const oppNames = multiTeamGoalMatch[4].split(/\s+et\s+/).map((s) => s.trim());
+		const teamNames = multiTeamGoalMatch[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiTeamGoalMatch[4].split(/,\s*|\s+et\s+/).map((s) => s.trim());
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
 			return teamNames.map((team, i) => ({
 				type: 'teamTotal',
@@ -1363,6 +1399,32 @@ function parseLegs(eventName, description, sportKey) {
 				side: 'over',
 				points,
 				period,
+				sport: sportKey,
+			}));
+		}
+	}
+
+	// Combo multi-matchs "gagnent ou font match nul et plus/moins de N buts
+	// dans chaque match (respectivement contre ...)" -- doubleChanceAndTotal
+	// PAR match (voir sa version single-match plus haut), matchs différents =
+	// indépendants.
+	const multiDcAndTotalMatch = d.match(
+		/(.+?)\s+gagnent\s+ou\s+font\s+match\s+nul\s+et\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?|jeux?)\s+dans\s+chaque\s+match\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiDcAndTotalMatch) {
+		const totalSide = /plus/i.test(multiDcAndTotalMatch[2]) ? 'over' : 'under';
+		const points = parseFloat(multiDcAndTotalMatch[3].replace(',', '.'));
+		const teamNames = multiDcAndTotalMatch[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiDcAndTotalMatch[4].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({
+				type: 'doubleChanceAndTotal',
+				team,
+				side: 'teamOrDraw',
+				teamA: team,
+				teamB: oppNames[i],
+				totalSide,
+				points,
 				sport: sportKey,
 			}));
 		}
@@ -2972,6 +3034,29 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === label);
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
+	if (leg.type === 'doubleChanceAndTotal' && homeAway) {
+		// Pas de marché combiné direct chez Piwi -- approximation Double
+		// Chance × Total (même principe que côté Pinnacle/Matchbook).
+		const dcMid = mk('Double Chance');
+		const totalMid = mk(PIWI_MARKET_NAMES[leg.sport]?.total);
+		if (!dcMid || !totalMid) return null;
+		const label = isHome(leg.team) ? 'Home or Draw' : 'Draw or Away';
+		const dcSels = await fetchPiwiSelections(dcMid, piwiEvent.eventId, (name) => name === label);
+		const prefix = leg.totalSide === 'over' ? 'Over' : 'Under';
+		const totalSels = await fetchPiwiSelections(totalMid, piwiEvent.eventId, (name, hc) => name?.startsWith(prefix) && hc === leg.points);
+		if (!dcSels?.[0] || !totalSels?.[0]) return null;
+		return { decimal: dcSels[0].back * totalSels[0].back, exact: false };
+	}
+	if (leg.type === 'doubleChanceAndBtts' && homeAway) {
+		const dcMid = mk('Double Chance');
+		const bttsMid = mk('Both teams to Score?');
+		if (!dcMid || !bttsMid) return null;
+		const label = isHome(leg.team) ? 'Home or Draw' : 'Draw or Away';
+		const dcSels = await fetchPiwiSelections(dcMid, piwiEvent.eventId, (name) => name === label);
+		const bttsSels = await fetchPiwiSelections(bttsMid, piwiEvent.eventId, (name) => name === 'Yes');
+		if (!dcSels?.[0] || !bttsSels?.[0]) return null;
+		return { decimal: dcSels[0].back * bttsSels[0].back, exact: false };
+	}
 	if (leg.type === 'drawNoBet') {
 		const mid = mk('Draw no Bet');
 		if (!mid) return null;
@@ -3146,7 +3231,33 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 // condition exacte du boost, pas les 3 côtés du 1X2 (sauf pour un moneyline
 // simple, où les 3 restent affichés -- c'est déjà l'info utile).
 async function findPiwiReference(legs, teamA, teamB) {
-	if (!legs || legs.length !== 1) return null;
+	if (!legs || !legs.length) return null;
+	if (legs.length > 1) {
+		// Combo multi-matchs à noms d'équipes explicites (PAS schedule-based --
+		// voir findPiwiScheduleReference pour ça) : multiTotalMatch/
+		// multiMoneylineMatch/multiTeamGoalMatch/multiSetsMatch/
+		// multiDcAndTotalMatch/multiWinsSet1Match portent déjà leur propre
+		// teamA/teamB par leg (matchs différents), donc chacune se résout
+		// indépendamment puis se multiplie -- matchs indépendants =
+		// multiplication exacte, comme côté Pinnacle.
+		const subLegs = [];
+		let probProduct = 1;
+		for (const leg of legs) {
+			if (!PIWI_MARKET_NAMES[leg.sport] || !leg.teamA || !leg.teamB) return null;
+			const piwiEvent = await findPiwiEvent(leg.teamA, leg.teamB, leg.sport);
+			if (!piwiEvent) return null;
+			const needsHomeAway = ['correctScore', 'doubleChance', 'htft', 'doubleChanceAndTotal', 'doubleChanceAndBtts'].includes(
+				leg.type
+			);
+			const homeAway = needsHomeAway ? await piwiHomeAway(piwiEvent, leg.sport) : null;
+			if (needsHomeAway && !homeAway) return null;
+			const ref = await resolvePiwiLeg(leg, piwiEvent, homeAway);
+			if (!ref?.decimal) return null;
+			probProduct *= 1 / ref.decimal;
+			subLegs.push({ label: `${leg.teamA} - ${leg.teamB}`, decimal: ref.decimal });
+		}
+		return { decimal: 1 / probProduct, exact: true, subLegs };
+	}
 	const leg = legs[0];
 	if (leg.teamA && leg.teamA !== teamA && leg.teamB && leg.teamB !== teamB) return null; // leg d'un autre match (combo)
 	// Sport pas encore exploré côté Piwi (pas de noms de marché confirmés) --
@@ -3155,7 +3266,7 @@ async function findPiwiReference(legs, teamA, teamB) {
 	if (!PIWI_MARKET_NAMES[leg.sport]) return null;
 	const piwiEvent = await findPiwiEvent(teamA, teamB, leg.sport);
 	if (!piwiEvent) return null;
-	const needsHomeAway = ['correctScore', 'doubleChance', 'htft'].includes(leg.type);
+	const needsHomeAway = ['correctScore', 'doubleChance', 'htft', 'doubleChanceAndTotal', 'doubleChanceAndBtts'].includes(leg.type);
 	const homeAway = needsHomeAway ? await piwiHomeAway(piwiEvent, leg.sport) : null;
 	if (needsHomeAway && !homeAway) return null;
 	return resolvePiwiLeg(leg, piwiEvent, homeAway);
@@ -3598,7 +3709,24 @@ function resolveMatchbookLeg(leg, mbEvent) {
 }
 
 async function findMatchbookReference(legs, teamA, teamB) {
-	if (!legs || legs.length !== 1) return null; // pas de combo multi-matchs pour l'instant
+	if (!legs || !legs.length) return null;
+	if (legs.length > 1) {
+		// Combo multi-matchs à noms d'équipes explicites -- même principe que
+		// côté Piwi (voir son commentaire) : chaque leg porte déjà son propre
+		// teamA/teamB, résolution indépendante puis multiplication.
+		const subLegs = [];
+		let probProduct = 1;
+		for (const leg of legs) {
+			if (!MATCHBOOK_SPORT_IDS[leg.sport] || !leg.teamA || !leg.teamB) return null;
+			const mbEvent = await findMatchbookEvent(leg.teamA, leg.teamB, leg.sport);
+			if (!mbEvent) return null;
+			const ref = await resolveMatchbookLeg(leg, mbEvent);
+			if (!ref?.decimal) return null;
+			probProduct *= 1 / ref.decimal;
+			subLegs.push({ label: `${leg.teamA} - ${leg.teamB}`, decimal: ref.decimal });
+		}
+		return { decimal: 1 / probProduct, exact: true, subLegs };
+	}
 	const leg = legs[0];
 	if (leg.teamA && leg.teamA !== teamA && leg.teamB && leg.teamB !== teamB) return null; // leg d'un autre match (combo)
 	if (!MATCHBOOK_SPORT_IDS[leg.sport]) return null;
