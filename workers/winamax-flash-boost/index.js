@@ -1227,7 +1227,19 @@ function findBothWinASet(leagues, teamA, teamB) {
 // "buts" et "points" existent dans plusieurs sports selon le contexte).
 function parseLegs(eventName, description, sportKey) {
 	if (!sportKey) return null; // sport non supporté par Pinnacle -- on ignore
-	const d = stripDiacritics(description || '');
+	// Même nettoyage que côté Unibet (voir son commentaire détaillé) : Winamax
+	// n'a pas de préfixe "CB - " mais garde des qualificatifs entre
+	// parenthèses en fin de phrase ("(hors prol. et TAB)") jamais retirés
+	// avant parseLegs, cassant les regex ancrées sur $ (ex: playerScorerAndWin
+	// sur "... buteur et ... gagne (hors prol. et TAB)"). "(respectivement
+	// contre ...)" explicitement épargné -- info réellement parsée plus bas.
+	let d = stripDiacritics(description || '');
+	for (let i = 0; i < 2; i++) {
+		d = d
+			.replace(/\s*\?\s*$/, '')
+			.replace(/\s*\((?!respectivement)(?:[^()]|\([^()]*\))*\)\s*$/i, '')
+			.trim();
+	}
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
 	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.

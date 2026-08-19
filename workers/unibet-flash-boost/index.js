@@ -1264,7 +1264,28 @@ function findBothWinASet(leagues, teamA, teamB) {
 // "buts" et "points" existent dans plusieurs sports selon le contexte).
 function parseLegs(eventName, description, sportKey) {
 	if (!sportKey) return null; // sport non supporté par Pinnacle -- on ignore
-	const d = stripDiacritics(description || '');
+	// Bug de fond trouvé en testant avec le texte RÉEL brut (pas une version
+	// simplifiée à la main) : Unibet garde "CB - "/"CB : " en préfixe ET
+	// " ? - Match"/" ? - 90 Mins"/etc. en suffixe dans boost.description, JAMAIS
+	// retiré nulle part avant parseLegs. Comme la plupart des regex ancrent sur
+	// ^ (via extractWinner) ou $ (directement), ce bruit cassait la quasi-
+	// totalité des types de legs sur Unibet -- pas juste ceux ajoutés
+	// aujourd'hui. Nettoyage centralisé ICI plutôt que patcher chaque regex
+	// une par une. Les parenthèses "(respectivement contre ...)" sont
+	// explicitement épargnées -- elles portent une info réellement parsée
+	// plus bas (combos multi-matchs).
+	let d = stripDiacritics(description || '');
+	d = d.replace(/^CB\s*[-:]\s*/i, '');
+	d = d.replace(
+		/\s*-\s*(?:Match|\d+\s*Mins?|1(?:er|ere|ère)?\s*Set|2(?:e|eme|ème)?\s*Set|1(?:ere|ère)?\s*Mi-?temps|Mi-?temps)\s*$/i,
+		''
+	);
+	for (let i = 0; i < 2; i++) {
+		d = d
+			.replace(/\s*\?\s*$/, '')
+			.replace(/\s*\((?!respectivement)(?:[^()]|\([^()]*\))*\)\s*$/i, '')
+			.trim();
+	}
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
 	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.
