@@ -1061,14 +1061,11 @@ function findCorrectScoreSum(leagues, teamName, opponentName, scoreLines, period
 	return null;
 }
 
-// Combo "toutes les équipes marquent" sans noms d'équipes ("Les 2 équipes
-// marquent dans chacun des N matchs à HHhMM") -- les matchs concernés se
-// retrouvent via le calendrier Pinnacle de la compétition déjà identifiée :
-// tous les matchs qui commencent à cette heure-là aujourd'hui (heure de
-// Paris). Si ce n'est pas exactement N matchs, ambigu -> silencieux plutôt
-// que de deviner lesquels. BTTS ("Both Teams To Score?") est un marché direct
-// Pinnacle, donc chaque leg est exacte ; matchs différents = indépendants.
-function findScheduleBtts(leagues, count, hour, minute) {
+// Trouve, dans une league Pinnacle déjà chargée, les matchups racine qui
+// démarrent aujourd'hui (heure de Paris) exactement à hour:minute --
+// utilisé par les combos schedule-based (scheduleBtts/scheduleTotal) qui
+// n'ont aucun nom d'équipe, juste une heure de coup d'envoi partagée.
+function findScheduledMatchups(matchups, hour, minute) {
 	const now = new Date();
 	const todayParts = new Intl.DateTimeFormat('fr-FR', {
 		timeZone: 'Europe/Paris',
@@ -1078,23 +1075,33 @@ function findScheduleBtts(leagues, count, hour, minute) {
 	}).formatToParts(now);
 	const today = `${todayParts.find((p) => p.type === 'year').value}-${todayParts.find((p) => p.type === 'month').value}-${todayParts.find((p) => p.type === 'day').value}`;
 
+	return matchups.filter((m) => {
+		if (!isRootMatchup(m) || m.type !== 'matchup' || !m.startTime) return false;
+		const parts = new Intl.DateTimeFormat('fr-FR', {
+			timeZone: 'Europe/Paris',
+			day: '2-digit',
+			month: '2-digit',
+			year: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit',
+			hourCycle: 'h23',
+		}).formatToParts(new Date(m.startTime));
+		const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+		const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+		const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+		return date === today && h === hour && mi === minute;
+	});
+}
+
+// Combo "toutes les équipes marquent" sans noms d'équipes ("Les 2 équipes
+// marquent dans chacun des N matchs à HHhMM") -- les matchs concernés se
+// retrouvent via le calendrier Pinnacle de la compétition déjà identifiée.
+// Si ce n'est pas exactement N matchs, ambigu -> silencieux plutôt que de
+// deviner lesquels. BTTS ("Both Teams To Score?") est un marché direct
+// Pinnacle, donc chaque leg est exacte ; matchs différents = indépendants.
+function findScheduleBtts(leagues, count, hour, minute) {
 	for (const { league, matchups, markets } of leagues) {
-		const matching = matchups.filter((m) => {
-			if (m.parentId || m.type !== 'matchup' || !m.startTime) return false;
-			const parts = new Intl.DateTimeFormat('fr-FR', {
-				timeZone: 'Europe/Paris',
-				day: '2-digit',
-				month: '2-digit',
-				year: 'numeric',
-				hour: '2-digit',
-				minute: '2-digit',
-				hourCycle: 'h23',
-			}).formatToParts(new Date(m.startTime));
-			const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
-			const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
-			const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
-			return date === today && h === hour && mi === minute;
-		});
+		const matching = findScheduledMatchups(matchups, hour, minute);
 		if (matching.length !== count) continue; // pas le bon nombre -> ambigu, on essaiera une autre ligue candidate
 
 		const subLegs = [];
@@ -1111,6 +1118,35 @@ function findScheduleBtts(leagues, count, hour, minute) {
 			const decimal = americanToDecimal(price);
 			probProduct *= 1 / decimal;
 			subLegs.push({ label: (m.participants || []).map((p) => p.name).join(' - '), decimal });
+		}
+		if (!allFound) continue;
+		return { league: league.name, decimal: 1 / probProduct, exact: true, subLegs };
+	}
+	return null;
+}
+
+// Même principe, mais total buts (Over/Under, sur le matchup racine
+// directement, pas un "special") au lieu de BTTS.
+function findScheduleTotal(leagues, count, hour, minute, side, points, period) {
+	for (const { league, matchups, markets } of leagues) {
+		const matching = findScheduledMatchups(matchups, hour, minute);
+		if (matching.length !== count) continue;
+
+		const subLegs = [];
+		let probProduct = 1;
+		let allFound = true;
+		for (const m of matching) {
+			const market = markets.find(
+				(mk) => mk.matchupId === m.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points
+			);
+			const p = market?.prices.find((pr) => pr.designation === side);
+			if (!p) {
+				allFound = false;
+				break;
+			}
+			const decimal = americanToDecimal(p.price);
+			probProduct *= 1 / decimal;
+			subLegs.push({ label: (m.participants || []).map((pp) => pp.name).join(' - '), decimal });
 		}
 		if (!allFound) continue;
 		return { league: league.name, decimal: 1 / probProduct, exact: true, subLegs };
@@ -1326,6 +1362,28 @@ function parseLegs(eventName, description, sportKey) {
 				count: parseInt(scheduleBttsMatch[1], 10),
 				hour: parseInt(scheduleBttsMatch[2], 10),
 				minute: scheduleBttsMatch[3] ? parseInt(scheduleBttsMatch[3], 10) : 0,
+				sport: sportKey,
+			},
+		];
+	}
+
+	// Même principe, mais total buts au lieu de BTTS -- "Au moins un but
+	// marqué (en 1ère mi-temps) lors de chacun des N matchs à HHhMM" ("au
+	// moins un but" = Over 0.5). Vraie cote Ligue des Champions vue sur
+	// Winamax, jamais parsée avant (ni Pinnacle ni les exchanges).
+	const scheduleTotalMatch = d.match(
+		/au\s+moins\s+(?:un|1)\s+but\s+marque\s*(en\s+(?:1ere|1ère|premiere|première)\s+mi-?temps)?\s*lors\s+de\s+chacun\s+des\s+(\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?/i
+	);
+	if (scheduleTotalMatch) {
+		return [
+			{
+				type: 'scheduleTotal',
+				count: parseInt(scheduleTotalMatch[2], 10),
+				hour: parseInt(scheduleTotalMatch[3], 10),
+				minute: scheduleTotalMatch[4] ? parseInt(scheduleTotalMatch[4], 10) : 0,
+				side: 'over',
+				points: 0.5,
+				period: scheduleTotalMatch[1] ? 1 : 0,
 				sport: sportKey,
 			},
 		];
@@ -1853,6 +1911,17 @@ function parseLegs(eventName, description, sportKey) {
 			},
 		];
 	}
+	// "TeamX gagne 2-0/2-1" (tennis, score EXACT en sets -- PAS un score de
+	// buts, à ne pas confondre avec correctScore) -- marché direct "Set
+	// Betting" chez Piwi ET Matchbook, format "{Joueur} {V}-{D}". Absent chez
+	// Pinnacle (vérifié en direct sur Borges v Nakashima, aucun special de ce
+	// type sur un match par ailleurs complet) -- exchange only, un des rares
+	// cas où Piwi/Matchbook couvrent plus que Pinnacle. Un seul chiffre après
+	// "gagne" (pas de liste "ou") pour ne pas empiéter sur correctScoreMatch.
+	const setScoreMatch = winningTeam && d.match(/gagne\s+(\d)-(\d)\.?\s*$/i);
+	if (setScoreMatch) {
+		return [{ type: 'setScore', team: winningTeam, score: `${setScoreMatch[1]}-${setScoreMatch[2]}`, sport: sportKey }];
+	}
 	// "TeamX gagne sans encaisser de but" -- marché spécial dédié "Team To Win
 	// to Nil?" (Yes/No), variante 1ère mi-temps si précisé.
 	const winToNilMatch =
@@ -1996,6 +2065,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
+	}
+	if (leg.type === 'scheduleTotal') {
+		return findScheduleTotal(leagues, leg.count, leg.hour, leg.minute, leg.side, leg.points, leg.period || 0);
 	}
 	if (leg.type === 'moneyline') {
 		const found = findMoneyline(leagues, leg.teamA, leg.teamB, leg.period || 0);
@@ -2243,15 +2315,22 @@ async function formatMonitoringMessage(event) {
 		// perso uniquement -- jamais republiée aux abonnés (canal monitoring
 		// privé seulement). Réutilise les mêmes legs que Pinnacle (parseLegs)
 		// pour cibler le marché EXACT du boost, pas juste le 1X2. Ne doit
-		// jamais bloquer l'alerte non plus.
+		// jamais bloquer l'alerte non plus. Les combos schedule-based
+		// (scheduleBtts/scheduleTotal) n'ont pas de nom d'équipe dans
+		// eventName ("Ligue des Champions") -- routées séparément, sans
+		// dépendre de splitTeams.
 		try {
-			const teams = splitTeams(boost.eventName);
-			if (teams) {
-				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
-				const piwiRef = await findPiwiReference(legs, teams[0], teams[1]);
-				const piwiLine = formatPiwiReference(piwiRef);
-				if (piwiLine) lines.push(piwiLine);
+			const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
+			let piwiRef = null;
+			if (isSchedule) {
+				piwiRef = await findPiwiScheduleReference(legs[0]);
+			} else {
+				const teams = splitTeams(boost.eventName);
+				if (teams) piwiRef = await findPiwiReference(legs, teams[0], teams[1]);
 			}
+			const piwiLine = formatPiwiReference(piwiRef);
+			if (piwiLine) lines.push(piwiLine);
 		} catch {
 			// silencieux
 		}
@@ -2259,13 +2338,17 @@ async function formatMonitoringMessage(event) {
 		// (usage perso, jamais republiée aux abonnés) -- deuxième source
 		// indépendante, utile pour comparer/prendre la cote la plus haute.
 		try {
-			const teams = splitTeams(boost.eventName);
-			if (teams) {
-				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
-				const matchbookRef = await findMatchbookReference(legs, teams[0], teams[1]);
-				const matchbookLine = formatMatchbookReference(matchbookRef);
-				if (matchbookLine) lines.push(matchbookLine);
+			const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
+			let matchbookRef = null;
+			if (isSchedule) {
+				matchbookRef = await findMatchbookScheduleReference(legs[0]);
+			} else {
+				const teams = splitTeams(boost.eventName);
+				if (teams) matchbookRef = await findMatchbookReference(legs, teams[0], teams[1]);
 			}
+			const matchbookLine = formatMatchbookReference(matchbookRef);
+			if (matchbookLine) lines.push(matchbookLine);
 		} catch {
 			// silencieux
 		}
@@ -2369,11 +2452,17 @@ async function backfillPinnacleRefs(env) {
 			let piwiLine = null;
 			let matchbookLine = null;
 			try {
-				const teams = splitTeams(boost.eventName);
-				if (teams) {
-					const legs = parseLegs(boost.eventName, boost.description, boost.sport);
-					piwiLine = formatPiwiReference(await findPiwiReference(legs, teams[0], teams[1]));
-					matchbookLine = formatMatchbookReference(await findMatchbookReference(legs, teams[0], teams[1]));
+				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+				const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
+				if (isSchedule) {
+					piwiLine = formatPiwiReference(await findPiwiScheduleReference(legs[0]));
+					matchbookLine = formatMatchbookReference(await findMatchbookScheduleReference(legs[0]));
+				} else {
+					const teams = splitTeams(boost.eventName);
+					if (teams) {
+						piwiLine = formatPiwiReference(await findPiwiReference(legs, teams[0], teams[1]));
+						matchbookLine = formatMatchbookReference(await findMatchbookReference(legs, teams[0], teams[1]));
+					}
 				}
 			} catch {
 				// silencieux
@@ -2843,6 +2932,17 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
+	if (leg.type === 'setScore') {
+		// Marché "Set Betting", runners "{Joueur} V-D" (ex: "Borges 2-0").
+		const mid = mk('Set Betting');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => {
+			const idx = (name || '').lastIndexOf(' ');
+			if (idx === -1) return false;
+			return name.slice(idx + 1) === leg.score && teamsMatch(name.slice(0, idx), leg.team);
+		});
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
 	if (leg.type === 'playerWinsASet') {
 		const mid = piwiMarketIdForTeamSuffix(piwiEvent, ' To Win A Set?', leg.player);
 		if (!mid) return null;
@@ -2945,8 +3045,127 @@ async function findPiwiReference(legs, teamA, teamB) {
 	return resolvePiwiLeg(leg, piwiEvent, homeAway);
 }
 
+// Récupère et aplatit tous les nœuds EVENT du calendrier complet d'une
+// compétition Piwi (même endpoint que findPiwiEventId, mais on veut ici
+// TOUS les événements avec leur startTime, pas juste celui qui matche des
+// noms d'équipes).
+async function fetchPiwiCompetitionEvents(competitionId) {
+	try {
+		const res = await fetch(`https://exch.piwi247.com/customer/api/competition/${competitionId}`, { headers: PIWI_HEADERS });
+		if (!res.ok) return [];
+		const data = await res.json();
+		const events = [];
+		const walk = (node) => {
+			if (node?.type === 'EVENT') events.push(node);
+			for (const c of node?.children || []) walk(c);
+		};
+		walk(data);
+		return events;
+	} catch {
+		return [];
+	}
+}
+
+// Équivalent Piwi de findScheduledMatchups côté Pinnacle : cherche, parmi les
+// compétitions déjà trackées pour ce sport, celle où EXACTEMENT `count`
+// événements démarrent aujourd'hui à hour:minute (heure de Paris). Ambigu
+// (mauvais compte) -> essaie la compétition suivante plutôt que de deviner.
+async function findPiwiScheduledEvents(sport, count, hour, minute) {
+	const now = new Date();
+	const todayParts = new Intl.DateTimeFormat('fr-FR', {
+		timeZone: 'Europe/Paris',
+		day: '2-digit',
+		month: '2-digit',
+		year: 'numeric',
+	}).formatToParts(now);
+	const today = `${todayParts.find((p) => p.type === 'year').value}-${todayParts.find((p) => p.type === 'month').value}-${todayParts.find((p) => p.type === 'day').value}`;
+
+	for (const competitionId of PIWI_COMPETITIONS_BY_SPORT[sport] || []) {
+		const events = await fetchPiwiCompetitionEvents(competitionId);
+		const matching = events.filter((e) => {
+			if (!e.startTime) return false;
+			const parts = new Intl.DateTimeFormat('fr-FR', {
+				timeZone: 'Europe/Paris',
+				day: '2-digit',
+				month: '2-digit',
+				year: 'numeric',
+				hour: '2-digit',
+				minute: '2-digit',
+				hourCycle: 'h23',
+			}).formatToParts(new Date(e.startTime));
+			const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+			const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+			const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+			return date === today && h === hour && mi === minute;
+		});
+		if (matching.length === count) return matching;
+	}
+	return null;
+}
+
+// Charge les marchés (REST) d'un événement Piwi trouvé par le calendrier --
+// même forme {eventId, markets} que findPiwiEvent, réutilisable telle
+// quelle par piwiMarketId/fetchPiwiSelections.
+async function fetchPiwiEventMarkets(eventId) {
+	try {
+		const res = await fetch(`https://exch.piwi247.com/customer/api/event/${eventId}`, { headers: PIWI_HEADERS });
+		if (!res.ok) return null;
+		const detail = await res.json();
+		const markets = (detail.children || []).filter((c) => c.type === 'MARKET').map((c) => ({ id: c.id, name: c.name }));
+		return { eventId, markets };
+	} catch {
+		return null;
+	}
+}
+
+// Équivalent Piwi de findScheduleBtts/findScheduleTotal côté Pinnacle --
+// combo multi-matchs sans nom d'équipe, matchs différents = indépendants,
+// multiplication exacte.
+async function findPiwiScheduleReference(leg) {
+	if (!PIWI_MARKET_NAMES[leg.sport]) return null;
+	const matching = await findPiwiScheduledEvents(leg.sport, leg.count, leg.hour, leg.minute);
+	if (!matching) return null;
+
+	const subLegs = [];
+	let probProduct = 1;
+	for (const e of matching) {
+		const piwiEvent = await fetchPiwiEventMarkets(e.id);
+		if (!piwiEvent) return null;
+		let back = null;
+		if (leg.type === 'scheduleBtts') {
+			const mid = piwiMarketId(piwiEvent, 'Both teams to Score?');
+			if (mid) {
+				const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name === 'Yes');
+				back = sels?.[0]?.back || null;
+			}
+		} else if (leg.type === 'scheduleTotal') {
+			const marketName =
+				leg.period === 1 ? `First Half Goals ${leg.points}` : PIWI_MARKET_NAMES[leg.sport]?.total;
+			const mid = piwiMarketId(piwiEvent, marketName);
+			if (mid) {
+				const prefix = leg.side === 'over' ? 'Over' : 'Under';
+				const sels = await fetchPiwiSelections(
+					mid,
+					piwiEvent.eventId,
+					leg.period === 1 ? (name) => name?.startsWith(prefix) : (name, hc) => name?.startsWith(prefix) && hc === leg.points
+				);
+				back = sels?.[0]?.back || null;
+			}
+		}
+		if (!back) return null;
+		probProduct *= 1 / back;
+		subLegs.push({ label: e.name, decimal: back });
+	}
+	return { decimal: 1 / probProduct, exact: true, subLegs };
+}
+
 function formatPiwiReference(piwiRef) {
 	if (!piwiRef) return null;
+	if (piwiRef.subLegs) {
+		const breakdown = piwiRef.subLegs.map((l) => `${l.label} : ${l.decimal.toFixed(2)}`).join('\n');
+		const product = piwiRef.subLegs.map((l) => l.decimal.toFixed(2)).join(' × ');
+		return `♟️ Exchange (Piwi247, perso) (combo ${piwiRef.subLegs.length} matchs) :\n${breakdown}\n${product} = ${Number(piwiRef.decimal).toFixed(2)}`;
+	}
 	if (piwiRef.all) {
 		const parts = piwiRef.all.map((r) => `${r.name} : ${Number(r.back).toFixed(2)}`);
 		return `♟️ Exchange (Piwi247, perso) : ${parts.join(' · ')}`;
@@ -3152,6 +3371,18 @@ function resolveMatchbookLeg(leg, mbEvent) {
 		const back = r ? matchbookBestBack(r) : null;
 		return back ? { decimal: back } : null;
 	}
+	if (leg.type === 'setScore') {
+		// Marché "Set Betting", runners "{Joueur} V-D" (ex: "Borges 2-0").
+		const m = matchbookMarket(markets, 'Set Betting');
+		if (!m) return null;
+		const r = m.runners.find((rr) => {
+			const idx = (rr.name || '').lastIndexOf(' ');
+			if (idx === -1) return false;
+			return rr.name.slice(idx + 1) === leg.score && teamsMatch(rr.name.slice(0, idx), leg.team);
+		});
+		const back = r ? matchbookBestBack(r) : null;
+		return back ? { decimal: back } : null;
+	}
 	if (leg.type === 'teamTotal' && (leg.period || 0) === 0) {
 		const name = isHome(leg.team) ? 'Home Team Total Goals' : 'Away Team Total Goals';
 		const m = markets.find((mk) => mk.name === name && mk.handicap === leg.points);
@@ -3242,8 +3473,79 @@ async function findMatchbookReference(legs, teamA, teamB) {
 	return resolveMatchbookLeg(leg, mbEvent);
 }
 
+// Équivalent Matchbook de findScheduleBtts/findScheduleTotal côté Pinnacle.
+// Pas de scoping par compétition possible (Matchbook n'expose aucun filtre
+// competition/league sur /edge/rest/events, contrairement à Piwi où
+// /customer/api/competition/{id} donne un calendrier déjà scopé) -- on
+// filtre donc sur TOUT le sport par horaire exact, protégé par la même garde
+// "exactement N événements" que partout ailleurs : si plusieurs compétitions
+// démarrent au même horaire pile, ça reste ambigu -> silencieux plutôt que
+// de risquer les mauvais matchs.
+async function findMatchbookScheduleEvents(sport, count, hour, minute) {
+	const list = await fetchMatchbookEvents(sport);
+	const now = new Date();
+	const todayParts = new Intl.DateTimeFormat('fr-FR', {
+		timeZone: 'Europe/Paris',
+		day: '2-digit',
+		month: '2-digit',
+		year: 'numeric',
+	}).formatToParts(now);
+	const today = `${todayParts.find((p) => p.type === 'year').value}-${todayParts.find((p) => p.type === 'month').value}-${todayParts.find((p) => p.type === 'day').value}`;
+
+	const matching = list.filter((e) => {
+		if (!e.start) return false;
+		const parts = new Intl.DateTimeFormat('fr-FR', {
+			timeZone: 'Europe/Paris',
+			day: '2-digit',
+			month: '2-digit',
+			year: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit',
+			hourCycle: 'h23',
+		}).formatToParts(new Date(e.start));
+		const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+		const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
+		const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
+		return date === today && h === hour && mi === minute;
+	});
+	return matching.length === count ? matching : null;
+}
+
+async function findMatchbookScheduleReference(leg) {
+	if (!MATCHBOOK_SPORT_IDS[leg.sport]) return null;
+	const matching = await findMatchbookScheduleEvents(leg.sport, leg.count, leg.hour, leg.minute);
+	if (!matching) return null;
+
+	const subLegs = [];
+	let probProduct = 1;
+	for (const e of matching) {
+		const markets = e.markets || [];
+		let back = null;
+		if (leg.type === 'scheduleBtts') {
+			back = matchbookBttsPrice(markets);
+		} else if (leg.type === 'scheduleTotal') {
+			const marketName = leg.period === 1 ? '1st Half Total' : 'Total';
+			const m = markets.find((mk) => mk.name === marketName && mk['market-type'] === 'total' && mk.handicap === leg.points);
+			if (m) {
+				const wantName = leg.side === 'over' ? `OVER ${leg.points}` : `UNDER ${leg.points}`;
+				const r = m.runners.find((rr) => rr.name === wantName);
+				back = r ? matchbookBestBack(r) : null;
+			}
+		}
+		if (!back) return null;
+		probProduct *= 1 / back;
+		subLegs.push({ label: e.name, decimal: back });
+	}
+	return { decimal: 1 / probProduct, exact: true, subLegs };
+}
+
 function formatMatchbookReference(ref) {
 	if (!ref) return null;
+	if (ref.subLegs) {
+		const breakdown = ref.subLegs.map((l) => `${l.label} : ${l.decimal.toFixed(2)}`).join('\n');
+		const product = ref.subLegs.map((l) => l.decimal.toFixed(2)).join(' × ');
+		return `📗 Exchange (Matchbook, perso) (combo ${ref.subLegs.length} matchs) :\n${breakdown}\n${product} = ${Number(ref.decimal).toFixed(2)}`;
+	}
 	if (ref.all) {
 		const parts = ref.all.map((r) => `${r.name} : ${Number(r.back).toFixed(2)}`);
 		return `📗 Exchange (Matchbook, perso) : ${parts.join(' · ')}`;
@@ -3340,6 +3642,26 @@ export default {
 			const legs = parseLegs(`${a} - ${b}`, d, sport);
 			const ref = await findPiwiReference(legs, a, b);
 			return new Response(JSON.stringify({ legs, ref, line: formatPiwiReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-schedule') {
+			const count = parseInt(url.searchParams.get('count') || '3', 10);
+			const hour = parseInt(url.searchParams.get('hour') || '21', 10);
+			const minute = parseInt(url.searchParams.get('minute') || '0', 10);
+			const side = url.searchParams.get('side') || 'over';
+			const points = parseFloat(url.searchParams.get('points') || '0.5');
+			const period = parseInt(url.searchParams.get('period') || '0', 10);
+			const type = url.searchParams.get('type') || 'scheduleTotal';
+			const leg = { type, count, hour, minute, side, points, period, sport: 'football' };
+			const piwiRef = await findPiwiScheduleReference(leg);
+			const matchbookRef = await findMatchbookScheduleReference(leg);
+			return new Response(
+				JSON.stringify({
+					leg,
+					piwi: { ref: piwiRef, line: formatPiwiReference(piwiRef) },
+					matchbook: { ref: matchbookRef, line: formatMatchbookReference(matchbookRef) },
+				}),
+				{ headers: { 'Content-Type': 'application/json' } }
+			);
 		}
 		if (url.pathname === '/test-matchbook-teams') {
 			const a = url.searchParams.get('a');
