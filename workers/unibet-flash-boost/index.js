@@ -1806,6 +1806,17 @@ function parseLegs(eventName, description, sportKey) {
 		const team = isExactlyTeamName(teamA, teamCand) ? teamA : isExactlyTeamName(teamB, teamCand) ? teamB : null;
 		const playerIsTeam = isExactlyTeamName(teamA, playerCand) || isExactlyTeamName(teamB, playerCand);
 		if (team && !playerIsTeam) {
+			// "PlayerA ou PlayerB buteur et TeamX gagne" -- deux joueurs
+			// interchangeables (l'un OU l'autre marque), pas un seul nom de
+			// joueur contenant littéralement " ou ". Bug réel trouvé sur "O.
+			// Blomberg ou J.P. Hauge buteur et Bodø/Glimt gagne" : le nom entier
+			// était pris comme UN SEUL joueur, ne correspondant à personne.
+			if (/\s+ou\s+/i.test(playerCand)) {
+				const players = playerCand.split(/\s+ou\s+/i).map((p) => p.trim());
+				if (players.length === 2) {
+					return [{ type: 'playersEitherScorerAndWin', players, team, sport: sportKey }];
+				}
+			}
 			return [{ type: 'playerScorerAndWin', player: playerCand, team, sport: sportKey }];
 		}
 	}
@@ -1868,6 +1879,29 @@ function parseLegs(eventName, description, sportKey) {
 			},
 		];
 	}
+	// "TeamX gagne par exactement N buts ou exactement M buts d'écart" -- marge
+	// EXACTE (pas "ou plus" comme marginMatch) -- calculable EXACTEMENT via
+	// Asian Handicap : P(marge = k) = P(couvre -(k-0.5)) - P(couvre -(k+0.5)),
+	// somme sur chaque k demandé. Pas d'équivalent direct Pinnacle non plus
+	// (pas de marché "Winning Margin" avec valeur exacte) -- Piwi/Matchbook
+	// uniquement pour ce type.
+	const exactMarginMatch =
+		winningTeam &&
+		d.match(
+			/gagne\s+par\s+((?:exactement\s+\d+\s*(?:buts?|points?|runs?|jeux?)\s*(?:,\s*|\s+ou\s+))*exactement\s+\d+\s*(?:buts?|points?|runs?|jeux?))\s+d.ecart\.?\s*$/i
+		);
+	if (exactMarginMatch) {
+		const margins = [...exactMarginMatch[1].matchAll(/exactement\s+(\d+)/gi)].map((m) => parseInt(m[1], 10));
+		return [
+			{
+				type: 'exactMargin',
+				team: winningTeam,
+				opponent: winningTeam === teamA ? teamB : teamA,
+				margins,
+				sport: sportKey,
+			},
+		];
+	}
 	if (winningTeam && marginMatch) {
 		return [
 			{
@@ -1918,9 +1952,19 @@ function parseLegs(eventName, description, sportKey) {
 	// type sur un match par ailleurs complet) -- exchange only, un des rares
 	// cas où Piwi/Matchbook couvrent plus que Pinnacle. Un seul chiffre après
 	// "gagne" (pas de liste "ou") pour ne pas empiéter sur correctScoreMatch.
-	const setScoreMatch = winningTeam && d.match(/gagne\s+(\d)-(\d)\.?\s*$/i);
+	const setScoreMatch = winningTeam && d.match(/gagne\s+(?:le\s+match\s+)?(\d)-(\d)\.?\s*$/i);
 	if (setScoreMatch) {
 		return [{ type: 'setScore', team: winningTeam, score: `${setScoreMatch[1]}-${setScoreMatch[2]}`, sport: sportKey }];
+	}
+	// "TeamX gagne le 1er set" (tennis, gagne SPÉCIFIQUEMENT le 1er set, sans
+	// score précisé -- différent de playerWinsASet qui vise "au moins un set"
+	// n'importe lequel) -- marché Piwi direct "Set 1 Winner" (participants =
+	// simples noms de joueurs comme un moneyline). Absent chez Matchbook
+	// (vérifié, aucun marché "Set 1" trouvé sur aucun match tennis en cours)
+	// et chez Pinnacle.
+	const winsSet1Match = winningTeam && d.match(/gagne\s+le\s+1(?:er|ere|ère)?\s+set\.?\s*$/i);
+	if (winsSet1Match) {
+		return [{ type: 'winsSet1', team: winningTeam, sport: sportKey }];
 	}
 	// "TeamX gagne sans encaisser de but" -- marché spécial dédié "Team To Win
 	// to Nil?" (Yes/No), variante 1ère mi-temps si précisé.
@@ -1951,7 +1995,13 @@ function parseLegs(eventName, description, sportKey) {
 }
 
 function extractWinner(d) {
-	const m = d.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+gagne\b/i);
+	// ".*?" au lieu d'une classe de caractères restrictive ([\w .'-]) : cette
+	// dernière ne couvre ni les lettres nordiques (ø, å...) ni le "/" des noms
+	// composés ("Bodø/Glimt"), donc le match échouait ENTIÈREMENT dès qu'un de
+	// ces caractères apparaissait dans le nom -- pas juste tronqué, aucun leg
+	// du tout. Toujours non-greedy donc s'arrête au premier " gagne" rencontré,
+	// même comportement sinon.
+	const m = d.match(/^([A-ZÀ-Ý].*?)\s+gagne\b/i);
 	return m ? m[1].trim() : '';
 }
 
@@ -2943,6 +2993,13 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		});
 		return sels?.[0] ? { decimal: sels[0].back } : null;
 	}
+	if (leg.type === 'winsSet1') {
+		// Marché "Set 1 Winner" -- participants = simples noms de joueurs.
+		const mid = mk('Set 1 Winner');
+		if (!mid) return null;
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => teamsMatch(name, leg.team));
+		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
 	if (leg.type === 'playerWinsASet') {
 		const mid = piwiMarketIdForTeamSuffix(piwiEvent, ' To Win A Set?', leg.player);
 		if (!mid) return null;
@@ -2972,6 +3029,28 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 			return teamsMatch(teamPart, leg.team);
 		});
 		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'exactMargin') {
+		// P(marge = k) = P(couvre -(k-0.5)) - P(couvre -(k+0.5)), sommé sur
+		// chaque k de leg.margins -- EXACT (pas une approximation), dérivé de
+		// deux lignes Asian Handicap adjacentes par valeur demandée.
+		const mid = mk('Asian Handicap');
+		if (!mid) return null;
+		const wantHcs = new Set(leg.margins.flatMap((k) => [-(k - 0.5), -(k + 0.5)]));
+		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name, hc) => {
+			if (!wantHcs.has(hc)) return false;
+			const teamPart = (name || '').replace(/\s*[+-]\d+(?:\.\d+)?\s*$/, '').trim();
+			return teamsMatch(teamPart, leg.team);
+		});
+		if (!sels) return null;
+		let prob = 0;
+		for (const k of leg.margins) {
+			const low = sels.find((s) => s.handicap === -(k - 0.5));
+			const high = sels.find((s) => s.handicap === -(k + 0.5));
+			if (!low) return null;
+			prob += 1 / low.back - (high ? 1 / high.back : 0);
+		}
+		return prob > 0 ? { decimal: 1 / prob, exact: true } : null;
 	}
 	if (leg.type === 'btts') {
 		const mid = mk('Both teams to Score?');
@@ -3019,6 +3098,22 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const mlSels = await fetchPiwiSelections(mlMid, piwiEvent.eventId, (name) => teamsMatch(name, leg.team));
 		if (!scorerSels?.[0] || !mlSels?.[0]) return null;
 		return { decimal: scorerSels[0].back * mlSels[0].back, exact: false };
+	}
+	if (leg.type === 'playersEitherScorerAndWin') {
+		// "PlayerA ou PlayerB buteur et TeamX gagne" -- combo à 2 joueurs
+		// interchangeables. APPROXIMATION : P(l'un des deux marque) = 1 -
+		// (1-p1)(1-p2) en traitant les deux comme indépendants (en vrai
+		// légèrement corrélés, même joueurs même équipe), puis multiplié par
+		// P(équipe gagne) -- même logique/étiquetage que playerScorerAndWin.
+		const scorerMid = mk('Player To Score');
+		const mlMid = mk(PIWI_MARKET_NAMES[leg.sport]?.moneyline);
+		if (!scorerMid || !mlMid) return null;
+		const scorerSels = await fetchPiwiSelections(scorerMid, piwiEvent.eventId, (name) => leg.players.some((p) => teamsMatch(name, p)));
+		const mlSels = await fetchPiwiSelections(mlMid, piwiEvent.eventId, (name) => teamsMatch(name, leg.team));
+		if (!scorerSels || scorerSels.length !== 2 || !mlSels?.[0]) return null;
+		const noneScoreProb = scorerSels.reduce((prod, s) => prod * (1 - 1 / s.back), 1);
+		const combinedProb = (1 - noneScoreProb) * (1 / mlSels[0].back);
+		return combinedProb ? { decimal: 1 / combinedProb, exact: false } : null;
 	}
 	return null;
 }
@@ -3272,6 +3367,26 @@ function matchbookBttsPrice(markets) {
 	const r = m.runners.find((rr) => rr.name === 'Yes');
 	return r ? matchbookBestBack(r) : null;
 }
+// Prix "back" pour un handicap SIGNÉ donné (ex: -1.5) et une équipe -- le
+// champ market.handicap chez Matchbook est TOUJOURS positif (une magnitude),
+// le signe n'existe que dans le nom du runner ("FC Barcelona -1.5" / "Elche
+// CF +1.5"), donc on construit le suffixe exact attendu directement plutôt
+// que de filtrer sur le champ numérique.
+function matchbookHandicapPrice(markets, wantHandicap, team) {
+	const wantSuffix = `${wantHandicap < 0 ? '-' : '+'}${Math.abs(wantHandicap).toFixed(1)}`;
+	for (const m of markets) {
+		if (m.name !== 'Handicap' || m['market-type'] !== 'handicap') continue;
+		const r = m.runners.find((rr) => {
+			const name = rr.name || '';
+			if (!name.endsWith(wantSuffix)) return false;
+			return teamsMatch(name.slice(0, name.length - wantSuffix.length).trim(), team);
+		});
+		const back = r ? matchbookBestBack(r) : null;
+		if (back) return back;
+	}
+	return null;
+}
+
 function matchbookDoubleChancePrice(markets, team) {
 	const m = matchbookMarket(markets, 'Double Chance');
 	if (!m) return null;
@@ -3321,24 +3436,22 @@ function resolveMatchbookLeg(leg, mbEvent) {
 	}
 	if (leg.type === 'margin') {
 		// Synonyme via Handicap, même logique que Piwi (Asian Handicap) :
-		// "gagne par N buts ou plus" = "couvre le handicap -(N-0.5)". MAIS
-		// contrairement à Piwi, le champ market.handicap chez Matchbook est
-		// TOUJOURS positif (une magnitude) -- le signe n'existe que dans le nom
-		// du runner ("FC Barcelona -1.5" / "Elche CF +1.5"), pas dans un champ
-		// numérique séparé. On construit donc le nom exact attendu directement.
-		const wantHandicap = -(leg.margin - 0.5);
-		const wantSuffix = `${wantHandicap < 0 ? '-' : '+'}${Math.abs(wantHandicap).toFixed(1)}`;
-		for (const m of markets) {
-			if (m.name !== 'Handicap' || m['market-type'] !== 'handicap') continue;
-			const r = m.runners.find((rr) => {
-				const name = rr.name || '';
-				if (!name.endsWith(wantSuffix)) return false;
-				return teamsMatch(name.slice(0, name.length - wantSuffix.length).trim(), leg.team);
-			});
-			const back = r ? matchbookBestBack(r) : null;
-			if (back) return { decimal: back };
+		// "gagne par N buts ou plus" = "couvre le handicap -(N-0.5)".
+		const back = matchbookHandicapPrice(markets, -(leg.margin - 0.5), leg.team);
+		return back ? { decimal: back } : null;
+	}
+	if (leg.type === 'exactMargin') {
+		// P(marge = k) = P(couvre -(k-0.5)) - P(couvre -(k+0.5)), sommé sur
+		// chaque k de leg.margins -- EXACT, dérivé de deux lignes Handicap
+		// adjacentes par valeur demandée (même principe que côté Piwi).
+		let prob = 0;
+		for (const k of leg.margins) {
+			const low = matchbookHandicapPrice(markets, -(k - 0.5), leg.team);
+			const high = matchbookHandicapPrice(markets, -(k + 0.5), leg.team);
+			if (!low) return null;
+			prob += 1 / low - (high ? 1 / high : 0);
 		}
-		return null;
+		return prob > 0 ? { decimal: 1 / prob, exact: true } : null;
 	}
 	if (leg.type === 'correctScore' && (leg.period || 0) === 0) {
 		const m = matchbookMarket(markets, 'Correct Score', 'correct_score');
