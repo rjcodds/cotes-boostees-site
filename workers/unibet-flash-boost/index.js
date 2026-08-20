@@ -1215,6 +1215,26 @@ function findMoneyline(leagues, teamA, teamB, period = 0) {
 	return null;
 }
 
+// Approximation "{Joueur} marque au moins N points et {Équipe} gagne"
+// (basket) -- même logique que playerScorerAndWin (marquer et gagner sont
+// corrélés positivement, pas indépendants) : findPlayerProp (Points) *
+// moneyline du même camp. Pinnacle uniquement -- ni Piwi ni Matchbook
+// n'exposent de player props exploités ici (voir findPlayerProp).
+function findPlayerPointsAndWinApprox(leagues, teamA, teamB, player, threshold, team) {
+	const prop = findPlayerProp(leagues, player, 'Points', 'over', threshold);
+	if (!prop) return null;
+	const found = findMoneyline(leagues, teamA, teamB, 0);
+	if (!found) return null;
+	const parts = found.participants || [];
+	const homePart = parts.find((p) => p.alignment === 'home') || parts[0];
+	const awayPart = parts.find((p) => p.alignment === 'away') || parts[1];
+	const designation = teamsMatch(homePart?.name, team) ? 'home' : teamsMatch(awayPart?.name, team) ? 'away' : null;
+	if (!designation) return null;
+	const backed = found.market.prices.find((p) => p.designation === designation);
+	if (!backed) return null;
+	return { league: prop.league, decimal: prop.decimal * americanToDecimal(backed.price), exact: false };
+}
+
 // Approximation "TeamX ouvre le score et gagne" -- pas de marché combiné
 // direct (voir son commentaire dans parseLegs), multiplication de First Team
 // To Score (special) et moneyline du même camp.
@@ -1243,7 +1263,19 @@ function findTotal(leagues, teamA, teamB, side, points, period = 0) {
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
 		);
 		if (!matchup) continue;
-		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points);
+		let market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points);
+		if (!market) {
+			// Tennis "total de jeux" -- contrairement au total de sets (déjà sur
+			// le matchup racine, voir findBothWinASet), le nombre de jeux vit sur
+			// un sous-matchup séparé dont les participants sont suffixés
+			// "(Games)" (vu en direct sur Swiatek-Rybakina : matchup séparé, pas
+			// de "special", même type 'total'/period que d'habitude). Repli
+			// silencieux si absent (autres sports n'ont pas ce sous-matchup).
+			const gamesMatchup = matchups.find((m) => m.parentId === matchup.id && (m.participants || []).some((p) => / \(Games\)$/.test(p.name || '')));
+			if (gamesMatchup) {
+				market = markets.find((mk) => mk.matchupId === gamesMatchup.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points);
+			}
+		}
 		if (!market) continue;
 		const p = market.prices.find((pr) => pr.designation === side);
 		if (!p) continue;
@@ -2007,6 +2039,27 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'playerCarded', player: playerCardedMatch[1].trim(), sport: sportKey }];
 	}
 
+	// "{Joueur} marque au moins N points et {Équipe} gagne" (basket) --
+	// APPROXIMATION étiquetée, même logique que playerScorerAndWin juste en
+	// dessous : findPlayerProp (Points) * moneyline du même camp. Vérifié
+	// AVANT playerScorerAndWinMatch : sa regex ("marque et TeamX gagne") ne
+	// matche pas "marque au moins N points et..." de toute façon (le "et"
+	// n'est pas immédiatement après "marque"), mais autant être explicite sur
+	// l'ordre pour la lisibilité.
+	const playerPointsAndWinMatch = d.match(
+		/^(.+?)\s+marque\s+au\s+moins\s+(\d+(?:[.,]\d+)?)\s*points?\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i
+	);
+	if (playerPointsAndWinMatch) {
+		const playerCand = playerPointsAndWinMatch[1].trim();
+		const threshold = parseFloat(playerPointsAndWinMatch[2].replace(',', '.'));
+		const teamCand = playerPointsAndWinMatch[3].trim();
+		const team = isExactlyTeamName(teamA, teamCand) ? teamA : isExactlyTeamName(teamB, teamCand) ? teamB : null;
+		const playerIsTeam = isExactlyTeamName(teamA, playerCand) || isExactlyTeamName(teamB, playerCand);
+		if (team && !playerIsTeam) {
+			return [{ type: 'playerPointsAndWin', player: playerCand, threshold, team, teamA, teamB, sport: sportKey }];
+		}
+	}
+
 	// "{Joueur} buteur et {Équipe} gagne" -- APPROXIMATION étiquetée (voir
 	// findPlayerScorerAndWinApprox côté Piwi) : marque et gagne ne sont pas
 	// indépendants (corrélation positive), donc le produit des deux marchés
@@ -2071,7 +2124,14 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'methodOfVictory', fighter: winningTeam, sport: sportKey }];
 	}
 
-	const totalMatch = d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?|jeux?)/i);
+	// "N jeux ou plus (dans le match)" -- même marché que "plus de N,5 jeux"
+	// ci-dessous, formulation alternative vue sur Winamax pour le total de
+	// jeux tennis (au lieu de "plus de N,5 jeux"). "N ou plus" = au moins N =
+	// Over (N-0.5), même conversion que scheduleTotal pour "au moins un but".
+	const totalOrMoreMatch = d.match(/(\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?|jeux?)\s+ou\s+plus\b/i);
+	const totalMatch =
+		d.match(/(plus|moins) de (\d+(?:[.,]\d+)?)\s*(?:buts?|points?|runs?|jeux?)/i) ||
+		(totalOrMoreMatch && ['', 'plus', String(parseFloat(totalOrMoreMatch[1].replace(',', '.')) - 0.5)]);
 	// Deux formulations existent pour la marge de victoire : "gagne par/de N
 	// buts ou plus" et "gagne par au moins N buts d'écart".
 	const marginMatch =
@@ -2331,6 +2391,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'firstScoreAndWin') {
 		return findFirstScoreAndWinApprox(leagues, leg.teamA, leg.teamB, leg.team, leg.period || 0);
+	}
+	if (leg.type === 'playerPointsAndWin') {
+		return findPlayerPointsAndWinApprox(leagues, leg.teamA, leg.teamB, leg.player, leg.threshold, leg.team);
 	}
 	if (leg.type === 'oddEvenAndTotal') {
 		return findOddEvenAndTotal(leagues, leg.teamA, leg.teamB, leg.label, leg.side, leg.points);
