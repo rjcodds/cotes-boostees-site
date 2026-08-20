@@ -1178,6 +1178,24 @@ function findMoneyline(leagues, teamA, teamB, period = 0) {
 	return null;
 }
 
+// Approximation "TeamX ouvre le score et gagne" -- pas de marché combiné
+// direct (voir son commentaire dans parseLegs), multiplication de First Team
+// To Score (special) et moneyline du même camp.
+function findFirstScoreAndWinApprox(leagues, teamA, teamB, team, period = 0) {
+	const fts = findSpecialByTeam(leagues, teamA, teamB, period === 1 ? 'First Team To Score 1st Half' : 'First Team To Score', team);
+	if (!fts) return null;
+	const found = findMoneyline(leagues, teamA, teamB, period);
+	if (!found) return null;
+	const parts = found.participants || [];
+	const homePart = parts.find((p) => p.alignment === 'home') || parts[0];
+	const awayPart = parts.find((p) => p.alignment === 'away') || parts[1];
+	const designation = teamsMatch(homePart?.name, team) ? 'home' : teamsMatch(awayPart?.name, team) ? 'away' : null;
+	if (!designation) return null;
+	const backed = found.market.prices.find((p) => p.designation === designation);
+	if (!backed) return null;
+	return { league: fts.league, decimal: fts.decimal * americanToDecimal(backed.price), exact: false };
+}
+
 function findTotal(leagues, teamA, teamB, side, points, period = 0) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
@@ -1292,6 +1310,25 @@ function parseLegs(eventName, description, sportKey) {
 		let m;
 		while ((m = teamPattern.exec(d)) !== null) {
 			legs.push({ type: 'margin', team: m[1].trim(), margin, sport: sportKey });
+		}
+		if (legs.length >= 2) return legs;
+	}
+
+	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
+	// marquent plus/moins de N buts/points chacun[e]" -- même forme que
+	// marginAll ci-dessus, mais condition = total buts D'UNE équipe (marché
+	// "team_total", déjà câblé via findTeamTotal), pas une marge de victoire.
+	const teamTotalAllMatch = d.match(/marquent?\s+(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*(?:buts?|points?)\s+chacune?\b/i);
+	if (teamTotalAllMatch) {
+		const side = /plus/i.test(teamTotalAllMatch[1]) ? 'over' : 'under';
+		const points = parseFloat(teamTotalAllMatch[2].replace(',', '.'));
+		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
+		const legs = [];
+		let m;
+		while ((m = teamPattern.exec(d)) !== null) {
+			const team = m[1].trim();
+			const opponent = m[2].trim();
+			legs.push({ type: 'teamTotal', teamA: team, teamB: opponent, team, side, points, sport: sportKey });
 		}
 		if (legs.length >= 2) return legs;
 	}
@@ -1528,6 +1565,17 @@ function parseLegs(eventName, description, sportKey) {
 		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
 	}
 
+	// "Plus de 2,5 sets lors du match" (tennis, MÊME match, pas de "chacun des
+	// matchs suivants" -- sinon combo déjà géré plus haut) -- formulation
+	// alternative de la même condition ("le match va au 3e set") que le
+	// marché ci-dessus, vue telle quelle sur Winamax. Réutilise bothWinASet,
+	// qui refuse déjà silencieusement si le match n'est pas best-of-3 (ligne
+	// Pinnacle != 2.5).
+	const totalSetsMatch = d.match(/plus\s+de\s+(\d+(?:[.,]\d+)?)\s*sets?\s+(?:lors\s+du\s+match|dans\s+le\s+match)?\.?\s*$/i);
+	if (totalSetsMatch && parseFloat(totalSetsMatch[1].replace(',', '.')) === 2.5) {
+		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
+	}
+
 	// "{Joueur} remporte/gagne au moins 1 set" (tennis, UN SEUL joueur) --
 	// marché Piwi direct "{Joueur} To Win A Set?" (Yes/No), vérifié en direct
 	// sur A.Zverev v Norrie. Absent chez Pinnacle (confirmé plus tôt cette
@@ -1705,6 +1753,23 @@ function parseLegs(eventName, description, sportKey) {
 	// déjà géré plus haut) -- marché Pinnacle direct "Both Teams To Score?".
 	if (/les\s+(?:2|deux)\s+equipes\s+marquent\b/i.test(d)) {
 		return [{ type: 'btts', teamA, teamB, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
+	// "TeamX ouvre le score et gagne (le match)" -- contrairement à
+	// winAndBtts ci-dessus, aucun marché combiné direct pour ça chez
+	// Pinnacle/Piwi/Matchbook (vérifié en direct sur Rayo Vallecano-Alaves :
+	// aucun des trois n'a de special "First To Score And Win"). Approximation
+	// par multiplication (First Team To Score Pinnacle * moneyline du même
+	// camp), non exacte -- les deux sont corrélés positivement en réalité
+	// (l'équipe qui ouvre le score gagne plus souvent), donc probablement une
+	// sous-estimation de la vraie cote, mais mieux qu'aucune ligne.
+	const firstScoreAndWinMatch = d.match(/^(.+?)\s+ouvre\s+le\s+score\s+et\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
+	if (firstScoreAndWinMatch) {
+		const cand = firstScoreAndWinMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [{ type: 'firstScoreAndWin', team, teamA, teamB, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		}
 	}
 
 	// "TeamX ou match nul" / "Double chance TeamX" -> Pinnacle "TeamX Or Draw" ;
@@ -2218,6 +2283,9 @@ async function resolveLeg(leg, leagueData) {
 	if (leg.type === 'winAndBtts') {
 		return findWinAndBtts(leagues, leg.teamA, leg.teamB, leg.team);
 	}
+	if (leg.type === 'firstScoreAndWin') {
+		return findFirstScoreAndWinApprox(leagues, leg.teamA, leg.teamB, leg.team, leg.period || 0);
+	}
 	if (leg.type === 'oddEvenAndTotal') {
 		return findOddEvenAndTotal(leagues, leg.teamA, leg.teamB, leg.label, leg.side, leg.points);
 	}
@@ -2309,6 +2377,25 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 	if (!resolved && leagueList.length) {
 		const tried = new Set(candidates.map((c) => c.id));
 		resolved = await scanAllLeaguesForLegs(legs, leagueList, tried);
+	}
+	// Combo multi-matchs dont les matchs ne sont PAS tous dans la même
+	// compétition (ex: un match Ligue Europa + un match Ligue Europa
+	// Conférence combinés dans un même "TeamA (vs OppA), TeamB (vs OppB)...") :
+	// les deux tentatives ci-dessus supposent une seule league partagée par
+	// toutes les legs, donc échouent par construction ici. Repli : résoudre
+	// chaque leg indépendamment (son propre scan complet du sport), comme
+	// déjà fait côté Piwi/Matchbook pour ces mêmes combos.
+	if (!resolved && legs.length > 1 && leagueList.length) {
+		const perLeg = [];
+		for (const leg of legs) {
+			const hit = await scanAllLeaguesForLegs([leg], leagueList, new Set());
+			if (!hit) {
+				perLeg.length = 0;
+				break;
+			}
+			perLeg.push(hit[0]);
+		}
+		if (perLeg.length === legs.length) resolved = perLeg;
 	}
 	if (!resolved) return null;
 
