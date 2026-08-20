@@ -629,12 +629,32 @@ function priceForParticipant(markets, matchupId, participantId) {
 	return null;
 }
 
+// Localise le matchup racine (marché principal, pas un special) d'un match
+// donné par ses deux équipes -- sert à scoper les marchés spéciaux ci-dessous
+// au bon match plutôt que de risquer d'en attraper un autre partageant le
+// même nom de marché/suffixe (ex: une équipe qui joue le même jour dans 2
+// compétitions différentes -- bug réel trouvé sur "Monaco To Win to Nil?"
+// qui remontait le prix d'un match de Ligue 1 sans rapport au lieu du vrai
+// match de Ligue Europa Conférence, faute de vérifier l'adversaire).
+function findRootMatchup(matchups, teamA, teamB) {
+	return matchups.find(
+		(m) =>
+			isRootMatchup(m) &&
+			m.participants?.length === 2 &&
+			((teamsMatch(m.participants[0]?.name, teamA) && teamsMatch(m.participants[1]?.name, teamB)) ||
+				(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
+	);
+}
+
 // Marché "Équipe & Over/Under X.Y" -- pari combiné publié directement par
 // Pinnacle, donc probabilité exacte (pas de corrélation à approximer).
-function findCombinedWinTotal(leagues, teamName, side, points) {
+function findCombinedWinTotal(leagues, teamA, teamB, teamName, side, points) {
 	const label = `${side === 'over' ? 'Over' : 'Under'} ${points}`;
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.id !== parent.id && m.parentId !== parent.id) continue;
 			const part = (m.participants || []).find(
 				(p) => p.name?.includes(' & ') && p.name.endsWith(label) && teamsMatch(p.name.split(' & ')[0], teamName)
 			);
@@ -655,9 +675,12 @@ function findCombinedWinTotal(leagues, teamName, side, points) {
 // To Win to Nil?", "Fenerbahce To Score?") -- le nom Pinnacle contient
 // l'équipe littéralement (peut différer en orthographe), on isole le préfixe
 // et compare via teamsMatch plutôt qu'une égalité stricte.
-function findSuffixedTeamYes(leagues, suffix, teamName) {
+function findSuffixedTeamYes(leagues, teamA, teamB, suffix, teamName) {
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			const desc = m.special?.description;
 			if (!desc || !desc.endsWith(suffix)) continue;
 			const teamPart = desc.slice(0, desc.length - suffix.length);
@@ -671,24 +694,27 @@ function findSuffixedTeamYes(leagues, suffix, teamName) {
 	return null;
 }
 
-function findWinToNil(leagues, teamName, period = 0) {
-	return findSuffixedTeamYes(leagues, period === 1 ? ' To Win to Nil? 1st Half' : ' To Win to Nil?', teamName);
+function findWinToNil(leagues, teamA, teamB, teamName, period = 0) {
+	return findSuffixedTeamYes(leagues, teamA, teamB, period === 1 ? ' To Win to Nil? 1st Half' : ' To Win to Nil?', teamName);
 }
 
 // "TeamX marque" (au moins une fois) -- distinct de "marque en premier"
 // (First Team To Score) et "marque exactement N buts" (Exact Team Goals),
 // tous deux vérifiés avant ce marché dans parseLegs.
-function findTeamToScore(leagues, teamName, period = 0) {
-	return findSuffixedTeamYes(leagues, period === 1 ? ' To Score? 1st Half' : ' To Score?', teamName);
+function findTeamToScore(leagues, teamA, teamB, teamName, period = 0) {
+	return findSuffixedTeamYes(leagues, teamA, teamB, period === 1 ? ' To Score? 1st Half' : ' To Score?', teamName);
 }
 
 // Marché "Équipe Goals Odd/Even" -- pair/impair sur les buts d'UNE équipe,
 // distinct de "Total Goals Odd/Even" (pair/impair du match entier, déjà géré
 // par findSpecialByLabel).
-function findTeamGoalsOddEven(leagues, teamName, label) {
+function findTeamGoalsOddEven(leagues, teamA, teamB, teamName, label) {
 	const suffix = ' Goals Odd/Even';
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			const desc = m.special?.description;
 			if (!desc || !desc.endsWith(suffix)) continue;
 			const teamPart = desc.slice(0, desc.length - suffix.length);
@@ -705,9 +731,12 @@ function findTeamGoalsOddEven(leagues, teamName, label) {
 // Helpers génériques réutilisés par plusieurs marchés spéciaux ci-dessous :
 // un participant identifié par un nom fixe ("Odd"/"Even"/"Yes"/"No"...) ou
 // par un nom d'équipe (comparé via teamsMatch, pas une égalité stricte).
-function findSpecialByLabel(leagues, description, label) {
+function findSpecialByLabel(leagues, teamA, teamB, description, label) {
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			if (m.special?.description !== description) continue;
 			const part = (m.participants || []).find((p) => p.name === label);
 			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
@@ -717,9 +746,12 @@ function findSpecialByLabel(leagues, description, label) {
 	}
 	return null;
 }
-function findSpecialByTeam(leagues, description, teamName) {
+function findSpecialByTeam(leagues, teamA, teamB, description, teamName) {
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			if (m.special?.description !== description) continue;
 			const part = (m.participants || []).find((p) => teamsMatch(p.name, teamName));
 			const price = part ? priceForParticipant(markets, m.id, part.id) : null;
@@ -735,10 +767,13 @@ function findSpecialByTeam(leagues, description, teamName) {
 // Le nom de participant Pinnacle contient le nom d'équipe littéral (peut
 // différer en orthographe du nôtre) -- on isole le préfixe/suffixe "Or Draw"
 // / "Draw Or" et on compare via teamsMatch, comme pour findWinToNil.
-function findDoubleChance(leagues, teamName, side, period = 0) {
+function findDoubleChance(leagues, teamA, teamB, teamName, side, period = 0) {
 	const description = period === 1 ? 'Double Chance 1st Half' : 'Double Chance';
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			if (m.special?.description !== description) continue;
 			const part = (m.participants || []).find((p) => {
 				const name = p.name || '';
@@ -765,10 +800,13 @@ function findDoubleChance(leagues, teamName, side, period = 0) {
 // varie selon le sport/la période ("5+" en match complet, parfois "4+" en
 // 1ère mi-temps) -- on essaie le nombre exact puis "N+" en repli plutôt que
 // de figer un seuil.
-function findExactTeamGoals(leagues, teamName, n, period = 0) {
+function findExactTeamGoals(leagues, teamA, teamB, teamName, n, period = 0) {
 	const suffix = period === 1 ? ' Goals 1st Half' : ' Goals';
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			const desc = m.special?.description;
 			if (!desc || !desc.endsWith(suffix)) continue;
 			const teamPart = desc.slice(0, desc.length - suffix.length);
@@ -786,10 +824,13 @@ function findExactTeamGoals(leagues, teamName, n, period = 0) {
 
 // Marché "Exact Total Goals" (buts exacts du match, toutes équipes
 // confondues) -- même repli "N" puis "N+" que findExactTeamGoals.
-function findExactTotalGoals(leagues, n, period = 0) {
+function findExactTotalGoals(leagues, teamA, teamB, n, period = 0) {
 	const description = period === 1 ? 'Exact Total Goals 1st Half' : 'Exact Total Goals';
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			if (m.special?.description !== description) continue;
 			const part =
 				(m.participants || []).find((p) => p.name === String(n)) ||
@@ -908,13 +949,13 @@ function findHalfTimeFullTime(leagues, teamA, teamB, htOutcome, ftOutcome) {
 // PAS statistiquement exact ("TeamX ou nul" corrèle avec le nombre de buts),
 // d'où exact:false -- formatPinnacleReference affiche un avertissement.
 function findDoubleChanceAndTotalApprox(leagues, teamName, side, teamA, teamB, totalSide, points) {
-	const dc = findDoubleChance(leagues, teamName, side, 0);
+	const dc = findDoubleChance(leagues, teamA, teamB, teamName, side, 0);
 	const total = findTotal(leagues, teamA, teamB, totalSide, points);
 	if (!dc || !total) return null;
 	return { league: dc.league, decimal: dc.decimal * total.decimal, exact: false };
 }
 function findDoubleChanceAndBttsApprox(leagues, teamName, side, teamA, teamB) {
-	const dc = findDoubleChance(leagues, teamName, side, 0);
+	const dc = findDoubleChance(leagues, teamA, teamB, teamName, side, 0);
 	const btts = findBtts(leagues, teamA, teamB, 0);
 	if (!dc || !btts) return null;
 	return { league: dc.league, decimal: dc.decimal * btts.decimal, exact: false };
@@ -1719,13 +1760,13 @@ function parseLegs(eventName, description, sportKey) {
 	if (teamOrDrawMatch) {
 		const cand = teamOrDrawMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
-		if (team) return [{ type: 'doubleChance', team, side: 'teamOrDraw', period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		if (team) return [{ type: 'doubleChance', team, teamA, teamB, side: 'teamOrDraw', period: isFirstHalf ? 1 : 0, sport: sportKey }];
 	}
 	const drawOrTeamMatch = d.match(/^(?:fait\s+)?(?:le\s+)?match\s+nul\s+ou\s+(.+?)\.?\s*$/i);
 	if (drawOrTeamMatch) {
 		const cand = drawOrTeamMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
-		if (team) return [{ type: 'doubleChance', team, side: 'drawOrTeam', period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		if (team) return [{ type: 'doubleChance', team, teamA, teamB, side: 'drawOrTeam', period: isFirstHalf ? 1 : 0, sport: sportKey }];
 	}
 
 	// "TeamX ne perd pas" -- marché Pinnacle direct "Draw No Bet" (mise
@@ -1734,7 +1775,7 @@ function parseLegs(eventName, description, sportKey) {
 	if (drawNoBetMatch) {
 		const cand = drawNoBetMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
-		if (team) return [{ type: 'drawNoBet', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		if (team) return [{ type: 'drawNoBet', team, teamA, teamB, period: isFirstHalf ? 1 : 0, sport: sportKey }];
 	}
 
 	// "TeamX marque en premier" / "TeamX marque le premier but" / "TeamX
@@ -1749,7 +1790,7 @@ function parseLegs(eventName, description, sportKey) {
 	if (firstToScoreMatch) {
 		const cand = firstToScoreMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
-		if (team) return [{ type: 'firstToScore', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		if (team) return [{ type: 'firstToScore', team, teamA, teamB, period: isFirstHalf ? 1 : 0, sport: sportKey }];
 		return [{ type: 'playerFirstScorer', player: cand, sport: sportKey }];
 	}
 
@@ -1762,7 +1803,16 @@ function parseLegs(eventName, description, sportKey) {
 		const cand = teamOddEvenMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
 		if (team) {
-			return [{ type: 'teamGoalsOddEven', team, label: /impair/i.test(teamOddEvenMatch[2]) ? 'Odd' : 'Even', sport: sportKey }];
+			return [
+				{
+					type: 'teamGoalsOddEven',
+					team,
+					teamA,
+					teamB,
+					label: /impair/i.test(teamOddEvenMatch[2]) ? 'Odd' : 'Even',
+					sport: sportKey,
+				},
+			];
 		}
 	}
 
@@ -1770,7 +1820,16 @@ function parseLegs(eventName, description, sportKey) {
 	// Goals Odd/Even".
 	const oddEvenMatch = d.match(/(?:nombre|total)\s+(?:de\s+)?buts?\s+(impair|pair)\b/i);
 	if (oddEvenMatch) {
-		return [{ type: 'oddEvenTotal', label: /impair/i.test(oddEvenMatch[1]) ? 'Odd' : 'Even', period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		return [
+			{
+				type: 'oddEvenTotal',
+				teamA,
+				teamB,
+				label: /impair/i.test(oddEvenMatch[1]) ? 'Odd' : 'Even',
+				period: isFirstHalf ? 1 : 0,
+				sport: sportKey,
+			},
+		];
 	}
 
 	// "TeamX marque exactement N buts" -- marché Pinnacle direct "TeamX Goals".
@@ -1780,7 +1839,15 @@ function parseLegs(eventName, description, sportKey) {
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
 		if (team) {
 			return [
-				{ type: 'exactTeamGoals', team, n: parseInt(exactTeamGoalsMatch[2], 10), period: isFirstHalf ? 1 : 0, sport: sportKey },
+				{
+					type: 'exactTeamGoals',
+					team,
+					teamA,
+					teamB,
+					n: parseInt(exactTeamGoalsMatch[2], 10),
+					period: isFirstHalf ? 1 : 0,
+					sport: sportKey,
+				},
 			];
 		}
 	}
@@ -1789,7 +1856,9 @@ function parseLegs(eventName, description, sportKey) {
 	// "Exact Total Goals" (pas lié à une équipe précise).
 	const exactTotalGoalsMatch = d.match(/exactement\s+(\d+)\s*buts?\s+(?:au\s+total|dans\s+le\s+match|marques?)\b/i);
 	if (exactTotalGoalsMatch) {
-		return [{ type: 'exactTotalGoals', n: parseInt(exactTotalGoalsMatch[1], 10), period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		return [
+			{ type: 'exactTotalGoals', teamA, teamB, n: parseInt(exactTotalGoalsMatch[1], 10), period: isFirstHalf ? 1 : 0, sport: sportKey },
+		];
 	}
 
 	// "TeamX marque plus/moins de N buts" -- total buts D'UNE ÉQUIPE (pas le
@@ -1923,7 +1992,7 @@ function parseLegs(eventName, description, sportKey) {
 	if (teamToScoreMatch) {
 		const cand = teamToScoreMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
-		if (team) return [{ type: 'teamToScore', team, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+		if (team) return [{ type: 'teamToScore', team, teamA, teamB, period: isFirstHalf ? 1 : 0, sport: sportKey }];
 		return [{ type: 'playerScorer', player: cand, sport: sportKey }];
 	}
 
@@ -2059,6 +2128,8 @@ function parseLegs(eventName, description, sportKey) {
 			{
 				type: 'winToNil',
 				team: winningTeam,
+				teamA,
+				teamB,
 				period: winToNilMatch[1] ? 1 : 0,
 				sport: sportKey,
 			},
@@ -2126,7 +2197,7 @@ function splitTeams(eventName) {
 async function resolveLeg(leg, leagueData) {
 	const leagues = [leagueData];
 	if (leg.type === 'winAndTotal') {
-		const direct = findCombinedWinTotal(leagues, leg.team, leg.side, leg.points);
+		const direct = findCombinedWinTotal(leagues, leg.team, leg.opponent, leg.team, leg.side, leg.points);
 		if (direct) return direct;
 		return null; // pas d'approximation : silencieux si le marché combiné direct n'existe pas
 	}
@@ -2140,37 +2211,49 @@ async function resolveLeg(leg, leagueData) {
 		return findCorrectScoreSum(leagues, leg.team, leg.opponent, leg.scoreLines, leg.period || 0);
 	}
 	if (leg.type === 'winToNil') {
-		return findWinToNil(leagues, leg.team, leg.period || 0);
+		return findWinToNil(leagues, leg.teamA, leg.teamB, leg.team, leg.period || 0);
 	}
 	if (leg.type === 'btts') {
 		return findBtts(leagues, leg.teamA, leg.teamB, leg.period || 0);
 	}
 	if (leg.type === 'doubleChance') {
-		return findDoubleChance(leagues, leg.team, leg.side, leg.period || 0);
+		return findDoubleChance(leagues, leg.teamA, leg.teamB, leg.team, leg.side, leg.period || 0);
 	}
 	if (leg.type === 'drawNoBet') {
-		return findSpecialByTeam(leagues, leg.period === 1 ? 'Draw No Bet 1st Half' : 'Draw No Bet', leg.team);
+		return findSpecialByTeam(leagues, leg.teamA, leg.teamB, leg.period === 1 ? 'Draw No Bet 1st Half' : 'Draw No Bet', leg.team);
 	}
 	if (leg.type === 'firstToScore') {
-		return findSpecialByTeam(leagues, leg.period === 1 ? 'First Team To Score 1st Half' : 'First Team To Score', leg.team);
+		return findSpecialByTeam(
+			leagues,
+			leg.teamA,
+			leg.teamB,
+			leg.period === 1 ? 'First Team To Score 1st Half' : 'First Team To Score',
+			leg.team
+		);
 	}
 	if (leg.type === 'oddEvenTotal') {
-		return findSpecialByLabel(leagues, leg.period === 1 ? 'Total Goals Odd/Even 1st Half' : 'Total Goals Odd/Even', leg.label);
+		return findSpecialByLabel(
+			leagues,
+			leg.teamA,
+			leg.teamB,
+			leg.period === 1 ? 'Total Goals Odd/Even 1st Half' : 'Total Goals Odd/Even',
+			leg.label
+		);
 	}
 	if (leg.type === 'exactTeamGoals') {
-		return findExactTeamGoals(leagues, leg.team, leg.n, leg.period || 0);
+		return findExactTeamGoals(leagues, leg.teamA, leg.teamB, leg.team, leg.n, leg.period || 0);
 	}
 	if (leg.type === 'exactTotalGoals') {
-		return findExactTotalGoals(leagues, leg.n, leg.period || 0);
+		return findExactTotalGoals(leagues, leg.teamA, leg.teamB, leg.n, leg.period || 0);
 	}
 	if (leg.type === 'teamTotal') {
 		return findTeamTotal(leagues, leg.teamA, leg.teamB, leg.team, leg.side, leg.points, leg.period || 0);
 	}
 	if (leg.type === 'teamToScore') {
-		return findTeamToScore(leagues, leg.team, leg.period || 0);
+		return findTeamToScore(leagues, leg.teamA, leg.teamB, leg.team, leg.period || 0);
 	}
 	if (leg.type === 'teamGoalsOddEven') {
-		return findTeamGoalsOddEven(leagues, leg.team, leg.label);
+		return findTeamGoalsOddEven(leagues, leg.teamA, leg.teamB, leg.team, leg.label);
 	}
 	if (leg.type === 'playerProp') {
 		return findPlayerProp(leagues, leg.player, leg.statLabel, leg.side, leg.threshold);
