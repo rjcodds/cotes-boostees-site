@@ -2503,6 +2503,12 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 		// Repéré en creusant pourquoi une flash Winamax manquait au canal
 		// abonnés côté match du PSG (même classe de bug, encore plus grave ici).
 		try {
+			if (event.type === 'remove') {
+				// Pas d'alerte pour les cotes retirées (demande explicite de
+				// l'utilisatrice, pas utile) -- juste le ménage KV, silencieux.
+				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
+				continue;
+			}
 			const { text, refLine, edge } = await formatMonitoringMessage(event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 
@@ -2524,10 +2530,6 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 				} catch {
 					// silencieux : le digest est une info secondaire
 				}
-			}
-			if (event.type === 'remove') {
-				// Le match est passé/le boost a disparu -- plus la peine de le revérifier.
-				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
 			}
 		} catch (e) {
 			console.log('postMonitoringDiff: sendToChat failed:', String(e));

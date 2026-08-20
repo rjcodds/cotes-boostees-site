@@ -2459,6 +2459,12 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 	console.log(`postMonitoringDiff: prev=${prevBoosts.length} current=${currentBoosts.length} events=${events.length}`);
 	for (const event of events) {
 		try {
+			if (event.type === 'remove') {
+				// Pas d'alerte pour les cotes retirées (demande explicite de
+				// l'utilisatrice, pas utile) -- juste le ménage KV, silencieux.
+				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
+				continue;
+			}
 			const { text, refLine, edge } = await formatMonitoringMessage(event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 
@@ -2478,9 +2484,6 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 				} catch {
 					// silencieux : le digest est une info secondaire
 				}
-			}
-			if (event.type === 'remove') {
-				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
 			}
 		} catch (e) {
 			console.log('postMonitoringDiff: sendToChat failed:', String(e));
