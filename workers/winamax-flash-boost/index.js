@@ -3965,6 +3965,16 @@ export default {
 				headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
 			});
 		}
+		if (url.pathname === '/digest-data') {
+			// Symétrique de la route côté Unibet -- Winamax calculait déjà ses
+			// propres stats en interne (appel direct dans postDailyDigest, pas
+			// besoin d'HTTP pour soi-même) mais ne les exposait jamais en HTTP,
+			// donc rien d'autre ne pouvait les lire de l'extérieur. Manquant
+			// trouvé en branchant le pipeline de contenu dessus.
+			const date = url.searchParams.get('date') || todayKey();
+			const stats = await computeDigestStats(env, date);
+			return new Response(JSON.stringify(stats), { headers: { 'Content-Type': 'application/json' } });
+		}
 		if (url.pathname === '/backfill-pinnacle') {
 			const result = await backfillPinnacleRefs(env);
 			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });

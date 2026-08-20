@@ -1,0 +1,34 @@
+name = "content-pipeline"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+# Étage 1 du pipeline de contenu (voir README) : repère la meilleure cote
+# boostée classique du jour (edge % déjà calculé par unibet-flash-boost et
+# winamax-flash-boost, réutilisé via /digest-data -- aucune donnée dupliquée
+# ni re-scrapée ici), génère un script court via Claude, l'envoie sur un
+# canal Telegram dédié pour validation manuelle. PAS de génération vidéo ni
+# de publication automatique à ce stade -- volontaire, voir README.
+#
+# Horaire choisi (20h05) : assez tard pour avoir vu la majorité des cotes du
+# jour, assez tôt pour laisser le temps de tourner une vidéo le soir même si
+# besoin.
+[triggers]
+crons = ["5 20 * * *"]
+
+# Service bindings, PAS un fetch() HTTP classique vers *.workers.dev -- un
+# Worker ne peut pas appeler un autre *.workers.dev du même compte par fetch()
+# normal (bloqué par Cloudflare, erreur 1042), il faut passer par un binding
+# direct. Trouvé en déboguant pourquoi /digest-data revenait toujours vide
+# alors qu'un curl direct depuis l'extérieur fonctionnait.
+[[services]]
+binding = "WINAMAX_WORKER"
+service = "winamax-flash-boost"
+
+[[services]]
+binding = "UNIBET_WORKER"
+service = "unibet-flash-boost"
+
+# Secrets à poser avec `wrangler secret put <NOM>` :
+#   ANTHROPIC_API_KEY       -- clé API Claude
+#   TELEGRAM_BOT_TOKEN      -- même bot que les autres workers, ou un nouveau
+#   CONTENT_REVIEW_CHAT_ID  -- ID du canal/chat Telegram dédié à la review de contenu
