@@ -2636,7 +2636,7 @@ function rebuildAddMessageText(boost, refLine) {
 	return lines.join('\n');
 }
 
-async function formatMonitoringMessage(event) {
+async function formatMonitoringMessage(env, event) {
 	const { type, boost, prevOdds } = event;
 	const lines = buildMonitoringBodyLines(type, boost, prevOdds);
 
@@ -2645,13 +2645,19 @@ async function formatMonitoringMessage(event) {
 	let refLine = null;
 	let edge = null;
 	if (type === 'add') {
+		let havePinnacle = false;
+		let havePiwi = false;
+		let haveMatchbook = false;
 		try {
 			const ref = await findPinnacleReference(boost.eventName, boost.description, boost.league, boost.sport);
 			const boostDecimal = parseFrenchDecimal(boost.newOdds);
 			const pinnacleDecimal = refComparableDecimal(ref);
 			edge = boostDecimal && pinnacleDecimal ? (boostDecimal / pinnacleDecimal - 1) * 100 : null;
 			refLine = formatPinnacleReference(ref, boostDecimal);
-			if (refLine) lines.push(``, refLine);
+			if (refLine) {
+				lines.push(``, refLine);
+				havePinnacle = true;
+			}
 		} catch {
 			// silencieux : pas de reference dispo ne doit jamais bloquer l'alerte
 		}
@@ -2663,18 +2669,23 @@ async function formatMonitoringMessage(event) {
 		// (scheduleBtts/scheduleTotal) n'ont pas de nom d'équipe dans
 		// eventName ("Ligue des Champions") -- routées séparément, sans
 		// dépendre de splitTeams.
+		let legs = null;
+		let teams = null;
 		try {
-			const legs = parseLegs(boost.eventName, boost.description, boost.sport);
+			legs = parseLegs(boost.eventName, boost.description, boost.sport);
 			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
 			let piwiRef = null;
 			if (isSchedule) {
 				piwiRef = await findPiwiScheduleReference(legs[0]);
 			} else {
-				const teams = splitTeams(boost.eventName);
+				teams = splitTeams(boost.eventName);
 				if (teams) piwiRef = await findPiwiReference(legs, teams[0], teams[1]);
 			}
 			const piwiLine = formatPiwiReference(piwiRef);
-			if (piwiLine) lines.push(piwiLine);
+			if (piwiLine) {
+				lines.push(piwiLine);
+				havePiwi = true;
+			}
 		} catch {
 			// silencieux
 		}
@@ -2682,19 +2693,34 @@ async function formatMonitoringMessage(event) {
 		// (usage perso, jamais republiée aux abonnés) -- deuxième source
 		// indépendante, utile pour comparer/prendre la cote la plus haute.
 		try {
-			const legs = parseLegs(boost.eventName, boost.description, boost.sport);
 			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
 			let matchbookRef = null;
 			if (isSchedule) {
 				matchbookRef = await findMatchbookScheduleReference(legs[0]);
 			} else {
-				const teams = splitTeams(boost.eventName);
+				teams = teams || splitTeams(boost.eventName);
 				if (teams) matchbookRef = await findMatchbookReference(legs, teams[0], teams[1]);
 			}
 			const matchbookLine = formatMatchbookReference(matchbookRef);
-			if (matchbookLine) lines.push(matchbookLine);
+			if (matchbookLine) {
+				lines.push(matchbookLine);
+				haveMatchbook = true;
+			}
 		} catch {
 			// silencieux
+		}
+		// Oddsportal en DERNIER recours seulement -- coûte un Browser Rendering,
+		// donc appelé uniquement quand aucune des 3 autres sources n'a rien
+		// trouvé pour ce marché (demande explicite de l'utilisatrice : ne pas
+		// l'afficher systématiquement, seulement en complément).
+		if (!havePinnacle && !havePiwi && !haveMatchbook && legs?.length === 1 && teams) {
+			try {
+				const oddsportalRef = await findOddsportalReference(env, legs[0], teams[0], teams[1]);
+				const oddsportalLine = formatOddsportalReference(oddsportalRef);
+				if (oddsportalLine) lines.push(oddsportalLine);
+			} catch {
+				// silencieux
+			}
 		}
 	}
 
@@ -2722,7 +2748,7 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
 				continue;
 			}
-			const { text, refLine, edge } = await formatMonitoringMessage(event);
+			const { text, refLine, edge } = await formatMonitoringMessage(env, event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 
 			if (event.type === 'add') {
@@ -4157,6 +4183,251 @@ function formatMatchbookReference(ref) {
 	return null;
 }
 
+// --- Oddsportal (comparateur multi-bookmakers, EN COMPLÉMENT SEULEMENT --
+// n'est appelé que quand Pinnacle/Piwi/Matchbook n'ont RIEN trouvé pour ce
+// marché, jamais en plus). Contrairement aux exchanges, les cotes affichées
+// sont déjà les meilleures parmi plusieurs bookmakers traditionnels -- exactement
+// ce que demande l'utilisatrice pour comparer à la cote boostée. Coûte un
+// lancement de Browser Rendering par appel (comme fetchPreloadedState), d'où
+// le statut "complément" plutôt que "toujours affiché" : ça borne le volume
+// à ce que les 3 autres sources ne couvrent pas.
+const ODDSPORTAL_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+// Un slug par compétition suivie -- même limitation que PIWI_COMPETITIONS_BY_SPORT :
+// Oddsportal n'expose pas d'ID stable par sport/circuit, juste un chemin par
+// compétition. Tennis en particulier change de tournoi chaque semaine, à tenir
+// à jour manuellement (voir le même commentaire côté Piwi).
+const ODDSPORTAL_COMPETITIONS_BY_SPORT = {
+	football: [
+		'football/france/ligue-1',
+		'football/france/ligue-2',
+		'football/england/premier-league',
+		'football/spain/laliga',
+		'football/italy/serie-a',
+		'football/germany/bundesliga',
+		'football/europe/champions-league',
+		'football/europe/europa-league',
+		'football/europe/europa-conference-league',
+	],
+	basketball: ['basketball/usa/nba', 'basketball/usa/wnba'],
+	baseball: ['baseball/usa/mlb'],
+	hockey: ['hockey/usa/nhl'],
+	tennis: [
+		// Tournois de la semaine en cours -- pas d'ID stable, à mettre à jour
+		// manuellement quand le tournoi change (voir PIWI_COMPETITIONS_BY_SPORT.tennis).
+		'tennis/usa/atp-cincinnati',
+		'tennis/usa/wta-cincinnati',
+	],
+};
+
+// Repère le match sur Oddsportal par nom d'équipe -- simple fetch HTTP (pas
+// besoin de Browser Rendering ici, la page liste les matchs du jour dans un
+// bloc JSON-LD schema.org rendu côté serveur). Renvoie aussi home/away tels
+// qu'affichés par Oddsportal (l'ordre peut différer du nôtre) pour savoir
+// quelle colonne de la table de cotes correspond à quelle équipe.
+async function findOddsportalMatchUrl(sport, teamA, teamB) {
+	for (const slug of ODDSPORTAL_COMPETITIONS_BY_SPORT[sport] || []) {
+		try {
+			const res = await fetch(`https://www.oddsportal.com/${slug}/`, { headers: { 'User-Agent': ODDSPORTAL_UA } });
+			if (!res.ok) continue;
+			const html = await res.text();
+			const re = /"name":"([^"]+?) - ([^"]+?)","startDate":"[^"]*","url":"(https:\/\/www\.oddsportal\.com\/[^"]+?)"/g;
+			let m;
+			while ((m = re.exec(html)) !== null) {
+				const [, home, away, rawUrl] = m;
+				if (
+					(teamsMatch(home, teamA) && teamsMatch(away, teamB)) ||
+					(teamsMatch(home, teamB) && teamsMatch(away, teamA))
+				) {
+					return { url: rawUrl.replace(/#.*$/, ''), home, away };
+				}
+			}
+		} catch {
+			continue;
+		}
+	}
+	return null;
+}
+
+// Charge la page du match via Browser Rendering et navigue jusqu'au bon
+// onglet marché/période avant de renvoyer le texte affiché. ORDRE IMPORTANT,
+// vérifié en direct : sélectionner un onglet marché (ex: "Correct Score")
+// réinitialise la période affichée à "Full Time" -- il faut donc cliquer le
+// marché D'ABORD, la période EN DERNIER, sinon la période retombe à "Full Time".
+async function fetchOddsportalBodyText(env, matchUrl, marketTab, periodTab) {
+	const browser = await puppeteer.launch(env.BROWSER);
+	try {
+		const page = await browser.newPage();
+		await page.setUserAgent(ODDSPORTAL_UA);
+		await page.goto(matchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+		await new Promise((r) => setTimeout(r, 4000));
+		const clickTab = (text) =>
+			page.evaluate((t) => {
+				const els = Array.from(document.querySelectorAll('a, button, div, span'));
+				const el = els.find((e) => e.textContent?.trim() === t && e.offsetParent !== null);
+				if (el) {
+					el.click();
+					return true;
+				}
+				return false;
+			}, text);
+		if (marketTab) {
+			if (!(await clickTab(marketTab))) return null;
+			await new Promise((r) => setTimeout(r, 2000));
+		}
+		if (periodTab) {
+			if (!(await clickTab(periodTab))) return null;
+			await new Promise((r) => setTimeout(r, 2000));
+		}
+		return await page.evaluate(() => document.body?.innerText || '');
+	} finally {
+		await browser.close();
+	}
+}
+
+// Parse la table "Bookmakers ... Payout" (marchés à 2 ou 3 issues : vainqueur,
+// total, BTTS, double chance...) en lignes {name, odds[], payout}. Approche
+// ligne-par-ligne plutôt que regex sur les espaces exacts : "CLAIM BONUS"
+// n'apparaît pas toujours entre le nom et les cotes (vu en direct, présence
+// inconsistante), donc on ignore ce token plutôt que d'ancrer dessus.
+function parseOddsportalBookmakerRows(bodyText) {
+	const start = bodyText.indexOf('Bookmakers');
+	if (start === -1) return [];
+	const endMarkers = ['My coupon', 'Previous Matches', 'OddsAlert', 'Show more'];
+	let end = bodyText.length;
+	for (const marker of endMarkers) {
+		const idx = bodyText.indexOf(marker, start);
+		if (idx !== -1 && idx < end) end = idx;
+	}
+	const lines = bodyText
+		.slice(start, end)
+		.split('\n')
+		.map((l) => l.trim())
+		.filter((l) => l && l !== 'CLAIM BONUS' && l !== 'CLAIM' && l !== 'Bookmakers');
+	const rows = [];
+	let i = 0;
+	while (i < lines.length && (/^[12X]$/.test(lines[i]) || lines[i] === 'Payout')) i++;
+	while (i < lines.length) {
+		const name = lines[i];
+		if (/^\d/.test(name) || name.endsWith('%')) {
+			i++;
+			continue;
+		}
+		i++;
+		const nums = [];
+		let sawPayout = false;
+		while (i < lines.length && /^\d+(?:[.,]\d+)?%?$/.test(lines[i])) {
+			nums.push(lines[i]);
+			sawPayout = lines[i].endsWith('%');
+			i++;
+			if (sawPayout) break;
+		}
+		if (!sawPayout || nums.length < 2) continue;
+		const payout = parseFloat(nums[nums.length - 1].replace('%', ''));
+		const odds = nums.slice(0, -1).map((n) => parseFloat(n.replace(',', '.')));
+		rows.push({ name, odds, payout });
+	}
+	return rows;
+}
+
+// Parse la table "score exact" (Correct Score) -- structure différente de
+// parseOddsportalBookmakerRows : une ligne par score, avec le nombre de
+// bookmakers qui le proposent et la MEILLEURE cote déjà calculée par
+// Oddsportal (pas de détail par bookmaker sur ce marché-là).
+function parseOddsportalScoreLines(bodyText) {
+	const re = /(\d+:\d+)\n(\d+)\n\t\n\n(\d+(?:[.,]\d+)?)/g;
+	const rows = [];
+	let m;
+	while ((m = re.exec(bodyText)) !== null) {
+		rows.push({ score: m[1], count: parseInt(m[2], 10), decimal: parseFloat(m[3].replace(',', '.')) });
+	}
+	return rows;
+}
+
+function oddsportalPeriodTab(sport, period) {
+	if (!period) return null; // "Full Time" est déjà l'onglet par défaut, pas besoin de cliquer
+	return sport === 'tennis' ? '1st Set' : '1st Half';
+}
+
+// Dispatch par type de leg -- couvre les marchés les plus fréquents
+// (vainqueur, total, BTTS, double chance, score exact tennis). Les types non
+// couverts renvoient simplement null (pas d'erreur), comme les autres
+// sources quand un marché n'existe pas.
+async function findOddsportalReference(env, leg, teamA, teamB) {
+	if (!ODDSPORTAL_COMPETITIONS_BY_SPORT[leg.sport]) return null;
+	const match = await findOddsportalMatchUrl(leg.sport, teamA, teamB);
+	if (!match) return null;
+	const periodTab = oddsportalPeriodTab(leg.sport, leg.period || 0);
+
+	const designationFor = (team) => {
+		if (teamsMatch(match.home, team)) return 0;
+		if (teamsMatch(match.away, team)) return 1;
+		return null;
+	};
+
+	if (leg.type === 'moneyline') {
+		const bodyText = await fetchOddsportalBodyText(env, match.url, null, periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalBookmakerRows(bodyText);
+		if (rows.length < 1) return null;
+		const idx = leg.team ? designationFor(leg.team) : null;
+		if (leg.team && idx == null) return null;
+		const colIdx = idx == null ? null : idx;
+		if (colIdx == null) return null; // pas de team backée précisée -- pas de ligne unique à afficher
+		const best = Math.max(...rows.map((r) => r.odds[colIdx]).filter((v) => !isNaN(v)));
+		if (!best) return null;
+		return { decimal: best, bookmakerCount: rows.length, exact: true };
+	}
+	if (leg.type === 'btts') {
+		const bodyText = await fetchOddsportalBodyText(env, match.url, 'Both Teams to Score', periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalBookmakerRows(bodyText);
+		if (!rows.length) return null;
+		const best = Math.max(...rows.map((r) => r.odds[0]).filter((v) => !isNaN(v)));
+		if (!best) return null;
+		return { decimal: best, bookmakerCount: rows.length, exact: true };
+	}
+	if (leg.type === 'doubleChance') {
+		const bodyText = await fetchOddsportalBodyText(env, match.url, 'Double Chance', periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalBookmakerRows(bodyText);
+		if (!rows.length) return null;
+		// Colonnes Oddsportal (foot) : "1X" / "12" / "X2" -- teamOrDraw = home
+		// gagne ou nul = colonne 0 si l'équipe backée est home, sinon colonne 2
+		// (X2). drawOrTeam = l'inverse.
+		const idx = designationFor(leg.team);
+		if (idx == null) return null;
+		let colIdx;
+		if (leg.side === 'teamOrDraw') colIdx = idx === 0 ? 0 : 2;
+		else colIdx = idx === 0 ? 2 : 0; // drawOrTeam
+		const best = Math.max(...rows.map((r) => r.odds[colIdx]).filter((v) => !isNaN(v)));
+		if (!best) return null;
+		return { decimal: best, bookmakerCount: rows.length, exact: true };
+	}
+	if (leg.type === 'setScore' && leg.sport === 'tennis') {
+		// Score exact d'1 SET précis (ex: "2-1" en sets, pas en jeux) -- marché
+		// "Correct Score" en période "Full Time" (le score du match, pas d'1 set).
+		const bodyText = await fetchOddsportalBodyText(env, match.url, 'Correct Score', null);
+		if (!bodyText) return null;
+		const rows = parseOddsportalScoreLines(bodyText);
+		if (!rows.length) return null;
+		const idx = designationFor(leg.team);
+		if (idx == null) return null;
+		const [a, b] = leg.score.split('-').map((n) => parseInt(n, 10));
+		const wantScore = idx === 0 ? `${a}:${b}` : `${b}:${a}`;
+		const row = rows.find((r) => r.score === wantScore);
+		if (!row) return null;
+		return { decimal: row.decimal, bookmakerCount: row.count, exact: true };
+	}
+	return null;
+}
+
+function formatOddsportalReference(ref) {
+	if (!ref?.decimal) return null;
+	const lowCountTag = ref.bookmakerCount < 4 ? ` ⚠️ seulement ${ref.bookmakerCount} bookmaker${ref.bookmakerCount > 1 ? 's' : ''}` : '';
+	return `📊 Oddsportal (${ref.bookmakerCount} bookmakers) : ${Number(ref.decimal).toFixed(2)}${lowCountTag}`;
+}
+
 async function checkAndPost(env) {
 	const state = await fetchPreloadedState(env);
 	const boosts = parseBoosts(state);
@@ -4300,6 +4571,17 @@ export default {
 				}),
 				{ headers: { 'Content-Type': 'application/json' } }
 			);
+		}
+		if (url.pathname === '/test-oddsportal-teams') {
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			const d = url.searchParams.get('d') || `${a} gagne`;
+			const sport = url.searchParams.get('sport') || 'football';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description&sport=football (optionnel)', { status: 400 });
+			const legs = parseLegs(`${a} - ${b}`, d, sport);
+			if (!legs || legs.length !== 1) return new Response(JSON.stringify({ legs, ref: null }), { headers: { 'Content-Type': 'application/json' } });
+			const ref = await findOddsportalReference(env, legs[0], a, b);
+			return new Response(JSON.stringify({ legs, ref, line: formatOddsportalReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/test-matchbook-raw') {
 			try {

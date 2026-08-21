@@ -1,6 +1,7 @@
 name = "unibet-flash-boost"
 main = "index.js"
 compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"] # requis par @cloudflare/puppeteer (Oddsportal)
 
 # Vérifie la page Unibet toutes les minutes (fenêtre flash courte : 8-9 min).
 [triggers]
@@ -11,3 +12,10 @@ crons = ["*/1 * * * *"]
 [[kv_namespaces]]
 binding = "SEEN_BOOSTS"
 id = "868f54d1e944414cbe155759cb1a3405"
+
+# Browser Rendering -- nécessaire uniquement pour le fallback Oddsportal
+# (comparateur multi-bookmakers, cotes chargées en JS après coup d'envoi de
+# la page, pas de rendu serveur possible comme pour Unibet lui-même). Même
+# binding que winamax-flash-boost.
+[browser]
+binding = "BROWSER"

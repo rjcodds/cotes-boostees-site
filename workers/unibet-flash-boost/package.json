@@ -1,5 +1,8 @@
 {
   "devDependencies": {
     "wrangler": "^4.121.0"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0"
   }
 }
