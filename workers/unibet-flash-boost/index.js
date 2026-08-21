@@ -1128,9 +1128,11 @@ function findScheduledMatchups(matchups, hour, minute) {
 			hourCycle: 'h23',
 		}).formatToParts(new Date(m.startTime));
 		const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+		if (date !== today) return false;
+		if (hour == null) return true; // "matchs du jour" -- pas d'heure précise, toute la journée
 		const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
 		const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
-		return date === today && h === hour && mi === minute;
+		return h === hour && mi === minute;
 	});
 }
 
@@ -1577,6 +1579,28 @@ function parseLegs(eventName, description, sportKey) {
 				side: 'over',
 				points: 0.5,
 				period: scheduleTotalMatch[1] ? 1 : 0,
+				sport: sportKey,
+			},
+		];
+	}
+
+	// Même principe que scheduleTotalMatch ci-dessus, mais "dans chacun des N
+	// matchs DU JOUR" (toute la journée, pas une heure de coup d'envoi
+	// précise) et un seuil de buts arbitraire (pas figé à "au moins un but").
+	// Vraie cote Ligue 2 vue sur Unibet ("Plus de 1.5 buts dans chacun des 5
+	// matchs du jour") -- même mécanisme (findScheduledMatchups), juste sans
+	// filtre horaire (hour=null -> matche toute la journée).
+	const scheduleTotalDayMatch = d.match(/plus\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+du\s+jour/i);
+	if (scheduleTotalDayMatch) {
+		return [
+			{
+				type: 'scheduleTotal',
+				count: parseInt(scheduleTotalDayMatch[2], 10),
+				hour: null,
+				minute: null,
+				side: 'over',
+				points: parseFloat(scheduleTotalDayMatch[1].replace(',', '.')),
+				period: 0,
 				sport: sportKey,
 			},
 		];
@@ -3556,9 +3580,11 @@ async function findPiwiScheduledEvents(sport, count, hour, minute) {
 				hourCycle: 'h23',
 			}).formatToParts(new Date(e.startTime));
 			const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+			if (date !== today) return false;
+			if (hour == null) return true; // "matchs du jour" -- pas d'heure précise, toute la journée
 			const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
 			const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
-			return date === today && h === hour && mi === minute;
+			return h === hour && mi === minute;
 		});
 		if (matching.length === count) return matching;
 	}
@@ -4001,9 +4027,11 @@ async function findMatchbookScheduleEvents(sport, count, hour, minute) {
 			hourCycle: 'h23',
 		}).formatToParts(new Date(e.start));
 		const date = `${parts.find((p) => p.type === 'year').value}-${parts.find((p) => p.type === 'month').value}-${parts.find((p) => p.type === 'day').value}`;
+		if (date !== today) return false;
+		if (hour == null) return true; // "matchs du jour" -- pas d'heure précise, toute la journée
 		const h = parseInt(parts.find((p) => p.type === 'hour').value, 10);
 		const mi = parseInt(parts.find((p) => p.type === 'minute').value, 10);
-		return date === today && h === hour && mi === minute;
+		return h === hour && mi === minute;
 	});
 	return matching.length === count ? matching : null;
 }
@@ -4142,8 +4170,9 @@ export default {
 		}
 		if (url.pathname === '/test-schedule') {
 			const count = parseInt(url.searchParams.get('count') || '3', 10);
-			const hour = parseInt(url.searchParams.get('hour') || '21', 10);
-			const minute = parseInt(url.searchParams.get('minute') || '0', 10);
+			const hourParam = url.searchParams.get('hour');
+			const hour = hourParam === 'none' ? null : parseInt(hourParam || '21', 10);
+			const minute = hour == null ? null : parseInt(url.searchParams.get('minute') || '0', 10);
 			const side = url.searchParams.get('side') || 'over';
 			const points = parseFloat(url.searchParams.get('points') || '0.5');
 			const period = parseInt(url.searchParams.get('period') || '0', 10);
