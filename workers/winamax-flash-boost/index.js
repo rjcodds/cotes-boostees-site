@@ -4252,9 +4252,12 @@ async function findOddsportalMatchUrl(sport, teamA, teamB) {
 // Charge la page du match via Browser Rendering et navigue jusqu'au bon
 // onglet marché/période avant de renvoyer le texte affiché. ORDRE IMPORTANT,
 // vérifié en direct : sélectionner un onglet marché (ex: "Correct Score")
-// réinitialise la période affichée à "Full Time" -- il faut donc cliquer le
-// marché D'ABORD, la période EN DERNIER, sinon la période retombe à "Full Time".
-async function fetchOddsportalBodyText(env, matchUrl, marketTab, periodTab) {
+// réinitialise la période affichée à "Full Time" -- il faut donc cliquer les
+// marchés D'ABORD, la période EN DERNIER, sinon la période retombe à "Full Time".
+// marketClicks est un TABLEAU (pas une string) : certains marchés (ex: "Draw
+// No Bet") sont planqués sous un sous-menu "More" et demandent 2 clics dans
+// l'ordre, pas un seul.
+async function fetchOddsportalBodyText(env, matchUrl, marketClicks, periodTab) {
 	const browser = await puppeteer.launch(env.BROWSER);
 	try {
 		const page = await browser.newPage();
@@ -4263,17 +4266,42 @@ async function fetchOddsportalBodyText(env, matchUrl, marketTab, periodTab) {
 		await new Promise((r) => setTimeout(r, 4000));
 		const clickTab = (text) =>
 			page.evaluate((t) => {
-				const els = Array.from(document.querySelectorAll('a, button, div, span'));
-				const el = els.find((e) => e.textContent?.trim() === t && e.offsetParent !== null);
-				if (el) {
-					el.click();
-					return true;
+				// Priorité aux boutons d'onglet marché identifiés par data-testid
+				// (sports-nav-*-tab) -- bien plus fiable qu'un matching par texte
+				// pur, qui attrapait parfois un homonyme ailleurs sur la page (bug
+				// réel rencontré en investiguant : le bouton "MORE" du menu sports
+				// vs celui des onglets marché, tous deux avec le texte "More").
+				const tabButtons = Array.from(
+					document.querySelectorAll('[data-testid="sports-nav-active-tab"], [data-testid="sports-nav-inactive-tab"]')
+				);
+				let target = tabButtons.find((e) => e.textContent?.trim() === t);
+				if (!target) {
+					const anchor = Array.from(document.querySelectorAll('div, span, a, button')).find(
+						(e) => e.textContent?.trim() === '1X2' || e.textContent?.trim() === 'Home/Away'
+					);
+					if (!anchor) return false;
+					const anchorY = anchor.getBoundingClientRect().top;
+					const candidates = Array.from(document.querySelectorAll('a, button, div, span')).filter(
+						(e) => e.textContent?.trim() === t && e.offsetParent !== null
+					);
+					if (!candidates.length) return false;
+					candidates.sort(
+						(a, b) => Math.abs(a.getBoundingClientRect().top - anchorY) - Math.abs(b.getBoundingClientRect().top - anchorY)
+					);
+					target = candidates[0].closest('a, button, [role="button"]') || candidates[0];
 				}
-				return false;
+				// "More" est un menu déclenché au survol (CSS :hover) chez certains
+				// onglets -- dispatch mouseover/mouseenter en plus du click pour
+				// couvrir les deux cas.
+				for (const type of ['mouseover', 'mouseenter', 'click']) {
+					target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+				}
+				target.click();
+				return true;
 			}, text);
-		if (marketTab) {
-			if (!(await clickTab(marketTab))) return null;
-			await new Promise((r) => setTimeout(r, 2000));
+		for (const text of marketClicks || []) {
+			if (!(await clickTab(text))) return null;
+			await new Promise((r) => setTimeout(r, 3000));
 		}
 		if (periodTab) {
 			if (!(await clickTab(periodTab))) return null;
@@ -4344,6 +4372,25 @@ function parseOddsportalScoreLines(bodyText) {
 	return rows;
 }
 
+// Parse la table "Over/Under" -- TOUTES les lignes (0.5, 0.75, 1, 1.25...)
+// sont affichées ensemble sur le même onglet, pas de sélecteur de ligne
+// séparé à cliquer. Meilleure cote déjà calculée par Oddsportal (comme
+// parseOddsportalScoreLines), "-" quand aucun bookmaker n'a cette ligne.
+function parseOddsportalOverUnderLines(bodyText) {
+	const re = /Over\/Under \+(\d+(?:[.,]\d+)?)\n(\d+)\n\t\n\n([\d.,]+|-)\n\n\t\n\n([\d.,]+|-)\n\n\t/g;
+	const rows = [];
+	let m;
+	while ((m = re.exec(bodyText)) !== null) {
+		rows.push({
+			points: parseFloat(m[1].replace(',', '.')),
+			count: parseInt(m[2], 10),
+			over: m[3] === '-' ? null : parseFloat(m[3].replace(',', '.')),
+			under: m[4] === '-' ? null : parseFloat(m[4].replace(',', '.')),
+		});
+	}
+	return rows;
+}
+
 function oddsportalPeriodTab(sport, period) {
 	if (!period) return null; // "Full Time" est déjà l'onglet par défaut, pas besoin de cliquer
 	return sport === 'tennis' ? '1st Set' : '1st Half';
@@ -4366,7 +4413,7 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 	};
 
 	if (leg.type === 'moneyline') {
-		const bodyText = await fetchOddsportalBodyText(env, match.url, null, periodTab);
+		const bodyText = await fetchOddsportalBodyText(env, match.url, [], periodTab);
 		if (!bodyText) return null;
 		const rows = parseOddsportalBookmakerRows(bodyText);
 		if (rows.length < 1) return null;
@@ -4379,7 +4426,7 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		return { decimal: best, bookmakerCount: rows.length, exact: true };
 	}
 	if (leg.type === 'btts') {
-		const bodyText = await fetchOddsportalBodyText(env, match.url, 'Both Teams to Score', periodTab);
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Both Teams to Score'], periodTab);
 		if (!bodyText) return null;
 		const rows = parseOddsportalBookmakerRows(bodyText);
 		if (!rows.length) return null;
@@ -4388,7 +4435,7 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		return { decimal: best, bookmakerCount: rows.length, exact: true };
 	}
 	if (leg.type === 'doubleChance') {
-		const bodyText = await fetchOddsportalBodyText(env, match.url, 'Double Chance', periodTab);
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Double Chance'], periodTab);
 		if (!bodyText) return null;
 		const rows = parseOddsportalBookmakerRows(bodyText);
 		if (!rows.length) return null;
@@ -4404,10 +4451,37 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		if (!best) return null;
 		return { decimal: best, bookmakerCount: rows.length, exact: true };
 	}
+	if (leg.type === 'drawNoBet') {
+		// Planqué sous le sous-menu "More" -- 2 clics dans l'ordre, vérifié en
+		// direct (bouton data-testid="sports-nav-inactive-tab", pas un lien
+		// direct dans la barre principale des onglets).
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['More', 'Draw No Bet'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalBookmakerRows(bodyText);
+		if (!rows.length) return null;
+		const idx = designationFor(leg.team);
+		if (idx == null) return null; // table à 2 colonnes (1/2, pas de X) -- idx 0 ou 1 directement
+		const best = Math.max(...rows.map((r) => r.odds[idx]).filter((v) => !isNaN(v)));
+		if (!best) return null;
+		return { decimal: best, bookmakerCount: rows.length, exact: true };
+	}
+	if (leg.type === 'total') {
+		// Toutes les lignes affichées sur le même onglet -- pas de sélecteur de
+		// ligne séparé à cliquer, juste à choisir la bonne dans la table.
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Over/Under'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalOverUnderLines(bodyText);
+		if (!rows.length) return null;
+		const row = rows.find((r) => Math.abs(r.points - leg.points) < 0.001);
+		if (!row) return null;
+		const val = leg.side === 'over' ? row.over : row.under;
+		if (!val) return null;
+		return { decimal: val, bookmakerCount: row.count, exact: true };
+	}
 	if (leg.type === 'setScore' && leg.sport === 'tennis') {
 		// Score exact d'1 SET précis (ex: "2-1" en sets, pas en jeux) -- marché
 		// "Correct Score" en période "Full Time" (le score du match, pas d'1 set).
-		const bodyText = await fetchOddsportalBodyText(env, match.url, 'Correct Score', null);
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Correct Score'], null);
 		if (!bodyText) return null;
 		const rows = parseOddsportalScoreLines(bodyText);
 		if (!rows.length) return null;
