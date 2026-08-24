@@ -1382,9 +1382,31 @@ function parseLegs(eventName, description, sportKey) {
 			.filter(Boolean);
 		const legs = [];
 		for (const pair of pairs) {
-			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s*-\s*([A-ZÀ-Ý][\w .'-]*?)$/);
+			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+-\s+([A-ZÀ-Ý][\w .'-]*?)$/);
 			if (!m2) continue;
 			legs.push({ type: 'total', teamA: m2[1].trim(), teamB: m2[2].trim(), side, points, sport: sportKey });
+		}
+		if (legs.length >= 2) return legs;
+	}
+
+	// Combo multi-matchs BTTS avec noms d'équipes explicites : "Chaque équipe
+	// marque lors des matchs suivants : TeamA - TeamB et TeamC - TeamD" --
+	// même forme que multiTotalMatch juste au-dessus, mais "chaque équipe
+	// marque" (BTTS) au lieu d'un total. Vraie cote Saudi Pro League vue sur
+	// Winamax, jamais parsée avant.
+	const multiBttsNamedMatch = d.match(
+		/chaque\s+equipe\s+marque\s+(?:lors\s+de[s]?\s+|dans\s+)?(?:chacun\s+des\s+)?matchs?\s+suivants\s*:\s*(.+)/i
+	);
+	if (multiBttsNamedMatch) {
+		const pairs = multiBttsNamedMatch[1]
+			.split(/,\s*|\s+et\s+/)
+			.map((s) => s.trim())
+			.filter(Boolean);
+		const legs = [];
+		for (const pair of pairs) {
+			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+-\s+([A-ZÀ-Ý][\w .'-]*?)$/);
+			if (!m2) continue;
+			legs.push({ type: 'btts', teamA: m2[1].trim(), teamB: m2[2].trim(), sport: sportKey });
 		}
 		if (legs.length >= 2) return legs;
 	}
@@ -1405,7 +1427,7 @@ function parseLegs(eventName, description, sportKey) {
 			.filter(Boolean);
 		const legs = [];
 		for (const pair of pairs) {
-			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s*-\s*([A-ZÀ-Ý][\w .'-]*?)$/);
+			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+-\s+([A-ZÀ-Ý][\w .'-]*?)$/);
 			if (!m2) continue;
 			legs.push({ type: 'bothWinASet', teamA: m2[1].trim(), teamB: m2[2].trim(), sport: sportKey });
 		}
