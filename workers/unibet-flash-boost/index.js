@@ -1612,6 +1612,31 @@ function parseLegs(eventName, description, sportKey) {
 		];
 	}
 
+	// Même principe que scheduleTotalMatch juste au-dessus, mais un seuil de
+	// buts arbitraire ("plus/moins de N,5 buts", pas figé à "au moins un
+	// but") avec une heure de coup d'envoi précise. Vraie cote Coupe
+	// d'Allemagne vue sur Winamax ("Plus de 2,5 buts dans chacun des 3 matchs
+	// à 18h00") -- sans ce parseur dédié, ce texte tombait dans le fallback
+	// total simple plus bas (team-agnostic) avec des "équipes" bidon, donnant
+	// une mauvaise résolution silencieuse plutôt qu'un échec propre.
+	const scheduleTotalHourMatch = d.match(
+		/(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?/i
+	);
+	if (scheduleTotalHourMatch) {
+		return [
+			{
+				type: 'scheduleTotal',
+				count: parseInt(scheduleTotalHourMatch[3], 10),
+				hour: parseInt(scheduleTotalHourMatch[4], 10),
+				minute: scheduleTotalHourMatch[5] ? parseInt(scheduleTotalHourMatch[5], 10) : 0,
+				side: /plus/i.test(scheduleTotalHourMatch[1]) ? 'over' : 'under',
+				points: parseFloat(scheduleTotalHourMatch[2].replace(',', '.')),
+				period: 0,
+				sport: sportKey,
+			},
+		];
+	}
+
 	// Même principe que scheduleTotalMatch ci-dessus, mais "dans chacun des N
 	// matchs DU JOUR" (toute la journée, pas une heure de coup d'envoi
 	// précise) et un seuil de buts arbitraire (pas figé à "au moins un but").
