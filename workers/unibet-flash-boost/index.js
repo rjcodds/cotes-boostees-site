@@ -4424,6 +4424,31 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		if (!row) return null;
 		return { decimal: row.decimal, bookmakerCount: row.count, exact: true };
 	}
+	if (leg.type === 'correctScore') {
+		// "TeamX gagne le match A-B, C-D ou E-F" -- somme des scores exacts
+		// demandés (tout ou rien : un seul manquant -> silencieux, comme
+		// findCorrectScoreSum côté Pinnacle, plutôt qu'une somme partielle qui
+		// sous-estimerait la vraie probabilité). Contrairement au tennis (onglet
+		// direct), "Correct Score" foot est planqué sous "More", vérifié en
+		// direct -- même sous-menu que Draw No Bet.
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['More', 'Correct Score'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalScoreLines(bodyText);
+		if (!rows.length) return null;
+		const idx = designationFor(leg.team);
+		if (idx == null) return null;
+		let probSum = 0;
+		let minCount = Infinity;
+		for (const [teamScore, oppScore] of leg.scoreLines) {
+			const wantScore = idx === 0 ? `${teamScore}:${oppScore}` : `${oppScore}:${teamScore}`;
+			const row = rows.find((r) => r.score === wantScore);
+			if (!row) return null;
+			probSum += 1 / row.decimal;
+			minCount = Math.min(minCount, row.count);
+		}
+		if (!probSum) return null;
+		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
+	}
 	return null;
 }
 
