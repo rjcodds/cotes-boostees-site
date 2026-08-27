@@ -991,10 +991,13 @@ function findPlayerProp(leagues, playerName, statLabel, side, threshold) {
 // special.description, cette fonction pouvait piocher la mauvaise période
 // selon l'ordre de retour de l'API (silencieux, jamais détecté sur un cas
 // réel car les paris de marge boostés sont pour l'instant tous match complet).
-function findWinningMargin(leagues, teamName, minMargin, period = 0) {
+function findWinningMargin(leagues, teamA, teamB, teamName, minMargin, period = 0) {
 	const expectedDescription = period === 1 ? 'Winning Margin 1st Half' : 'Winning Margin';
 	for (const { league, matchups, markets } of leagues) {
+		const parent = findRootMatchup(matchups, teamA, teamB);
+		if (!parent) continue;
 		for (const m of matchups) {
+			if (m.parentId !== parent.id) continue;
 			if (m.special?.description !== expectedDescription) continue;
 			const teamParts = (m.participants || [])
 				.filter((p) => / By \d+\+?$/.test(p.name || '') && teamsMatch(p.name.split(' By ')[0], teamName))
@@ -1146,6 +1149,34 @@ function findScheduleTotal(leagues, count, hour, minute, side, points, period) {
 				(mk) => mk.matchupId === m.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points
 			);
 			const p = market?.prices.find((pr) => pr.designation === side);
+			if (!p) {
+				allFound = false;
+				break;
+			}
+			const decimal = americanToDecimal(p.price);
+			probProduct *= 1 / decimal;
+			subLegs.push({ label: (m.participants || []).map((pp) => pp.name).join(' - '), decimal });
+		}
+		if (!allFound) continue;
+		return { league: league.name, decimal: 1 / probProduct, exact: true, subLegs };
+	}
+	return null;
+}
+
+// Même principe que findScheduleBtts/findScheduleTotal, mais victoire de
+// l'équipe à DOMICILE (moneyline, désignation "home") -- "Chaque équipe à
+// domicile gagne (N matchs à HHhMM)", vraie cote Pro D2 vue sur Winamax.
+function findScheduleHomeWin(leagues, count, hour, minute) {
+	for (const { league, matchups, markets } of leagues) {
+		const matching = findScheduledMatchups(matchups, hour, minute);
+		if (matching.length !== count) continue;
+
+		const subLegs = [];
+		let probProduct = 1;
+		let allFound = true;
+		for (const m of matching) {
+			const market = markets.find((mk) => mk.matchupId === m.id && mk.type === 'moneyline' && mk.period === 0);
+			const p = market?.prices.find((pr) => pr.designation === 'home');
 			if (!p) {
 				allFound = false;
 				break;
@@ -1330,7 +1361,12 @@ function parseLegs(eventName, description, sportKey) {
 	for (let i = 0; i < 2; i++) {
 		d = d
 			.replace(/\s*\?\s*$/, '')
-			.replace(/\s*\((?!respectivement)(?:[^()]|\([^()]*\))*\)\s*$/i, '')
+			// "(respectivement contre ...)" épargné (info réellement parsée plus
+			// bas) -- "(N matchs à HHhMM)" épargné aussi (schedule combo, ex:
+			// "Chaque équipe à domicile gagne (5 matchs à 19h30)") : bug réel
+			// trouvé en direct, ce suffixe était supprimé avant même d'atteindre
+			// le parseur dédié, qui ne voyait plus jamais l'heure/le nombre de matchs.
+			.replace(/\s*\((?!respectivement)(?!\d+\s+matchs?\s+a\s+\d{1,2}h)(?:[^()]|\([^()]*\))*\)\s*$/i, '')
 			.trim();
 	}
 
@@ -1343,7 +1379,9 @@ function parseLegs(eventName, description, sportKey) {
 		const legs = [];
 		let m;
 		while ((m = teamPattern.exec(d)) !== null) {
-			legs.push({ type: 'margin', team: m[1].trim(), margin, sport: sportKey });
+			const team = m[1].trim();
+			const opponent = m[2].trim();
+			legs.push({ type: 'margin', team, teamA: team, teamB: opponent, margin, sport: sportKey });
 		}
 		if (legs.length >= 2) return legs;
 	}
@@ -1447,6 +1485,21 @@ function parseLegs(eventName, description, sportKey) {
 		const oppNames = multiMoneylineMatch[3].split(/,\s*|\s+et\s+/).map((s) => s.trim());
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
 			return teamNames.map((team, i) => ({ type: 'moneyline', teamA: team, teamB: oppNames[i], team, period, sport: sportKey }));
+		}
+	}
+	// Même forme, mais "gagnent chacun(e) par au moins N buts/points d'écart"
+	// (marge de victoire) -- combo multi-matchs pour margin, même principe que
+	// multiMoneylineMatch juste au-dessus mais avec un seuil de marge au lieu
+	// d'une simple victoire. Vraie cote EFL Cup vue sur Winamax.
+	const multiMarginMatch = d.match(
+		/(.+?)\s+gagnent\s+chacune?\s+par\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?|jeux?)\s+d.ecart\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiMarginMatch) {
+		const margin = parseInt(multiMarginMatch[2], 10);
+		const teamNames = multiMarginMatch[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiMarginMatch[3].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({ type: 'margin', teamA: team, teamB: oppNames[i], team, margin, period: 0, sport: sportKey }));
 		}
 	}
 	// Même forme, mais "gagnent chacun(e) le 1er/premier set" (tennis) --
@@ -1602,6 +1655,23 @@ function parseLegs(eventName, description, sportKey) {
 				side: 'over',
 				points: parseFloat(scheduleTotalDayMatch[1].replace(',', '.')),
 				period: 0,
+				sport: sportKey,
+			},
+		];
+	}
+
+	// "Chaque équipe à domicile gagne (N matchs à HHhMM)" -- victoire du camp
+	// domicile dans chacun des N matchs programmés à la même heure, sans nom
+	// d'équipe (calendrier Pinnacle de la compétition, comme scheduleBtts/
+	// scheduleTotal). Vraie cote Pro D2 vue sur Winamax.
+	const scheduleHomeWinMatch = d.match(/chaque\s+equipe\s+a\s+domicile\s+gagne\s*\((\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?\)/i);
+	if (scheduleHomeWinMatch) {
+		return [
+			{
+				type: 'scheduleHomeWin',
+				count: parseInt(scheduleHomeWinMatch[1], 10),
+				hour: parseInt(scheduleHomeWinMatch[2], 10),
+				minute: scheduleHomeWinMatch[3] ? parseInt(scheduleHomeWinMatch[3], 10) : 0,
 				sport: sportKey,
 			},
 		];
@@ -2210,6 +2280,8 @@ function parseLegs(eventName, description, sportKey) {
 				type: 'margin',
 				team: winningTeam,
 				opponent: winningTeam === teamA ? teamB : teamA,
+				teamA,
+				teamB,
 				margin: parseInt(marginMatch[1], 10),
 				period: isFirstHalf ? 1 : 0,
 				sport: sportKey,
@@ -2352,7 +2424,7 @@ async function resolveLeg(leg, leagueData) {
 		return null; // pas d'approximation : silencieux si le marché combiné direct n'existe pas
 	}
 	if (leg.type === 'margin') {
-		return findWinningMargin(leagues, leg.team, leg.margin, leg.period || 0);
+		return findWinningMargin(leagues, leg.teamA, leg.teamB, leg.team, leg.margin, leg.period || 0);
 	}
 	if (leg.type === 'total') {
 		return findTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points, leg.period || 0);
@@ -2440,6 +2512,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'scheduleTotal') {
 		return findScheduleTotal(leagues, leg.count, leg.hour, leg.minute, leg.side, leg.points, leg.period || 0);
+	}
+	if (leg.type === 'scheduleHomeWin') {
+		return findScheduleHomeWin(leagues, leg.count, leg.hour, leg.minute);
 	}
 	if (leg.type === 'moneyline') {
 		const found = findMoneyline(leagues, leg.teamA, leg.teamB, leg.period || 0);
@@ -2720,7 +2795,7 @@ async function formatMonitoringMessage(env, event) {
 		let teams = null;
 		try {
 			legs = parseLegs(boost.eventName, boost.description, boost.sport);
-			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
+			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin'].includes(legs[0].type);
 			let piwiRef = null;
 			if (isSchedule) {
 				piwiRef = await findPiwiScheduleReference(legs[0]);
@@ -2740,7 +2815,7 @@ async function formatMonitoringMessage(env, event) {
 		// (usage perso, jamais republiée aux abonnés) -- deuxième source
 		// indépendante, utile pour comparer/prendre la cote la plus haute.
 		try {
-			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
+			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin'].includes(legs[0].type);
 			let matchbookRef = null;
 			if (isSchedule) {
 				matchbookRef = await findMatchbookScheduleReference(legs[0]);
@@ -2976,7 +3051,7 @@ async function backfillPinnacleRefs(env) {
 			let matchbookLine = null;
 			try {
 				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
-				const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal'].includes(legs[0].type);
+				const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin'].includes(legs[0].type);
 				if (isSchedule) {
 					piwiLine = formatPiwiReference(await findPiwiScheduleReference(legs[0]));
 					matchbookLine = formatMatchbookReference(await findMatchbookScheduleReference(legs[0]));
