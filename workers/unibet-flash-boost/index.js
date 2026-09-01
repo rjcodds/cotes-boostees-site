@@ -1935,7 +1935,9 @@ function parseLegs(eventName, description, sportKey) {
 	// session avec "Boisson remporte au moins 1 set" -- aucun marché trouvé).
 	const playerWinsASetMatch = d.match(/^(.+?)\s+(?:remporte|gagne)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\s*\??\.?\s*$/i);
 	if (playerWinsASetMatch && !/respectivement/i.test(d)) {
-		return [{ type: 'playerWinsASet', player: playerWinsASetMatch[1].trim(), sport: sportKey }];
+		const cand = playerWinsASetMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		return [{ type: 'playerWinsASet', player: cand, team, teamA, teamB, sport: sportKey }];
 	}
 
 	// "Les 2 équipes marquent et plus/moins de N buts" -- marché Pinnacle
@@ -4823,6 +4825,31 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		// Exact (pas une approximation) : la définition du pari EST exactement
 		// "somme des scores exacts où l'adversaire gagne >=1 set", pas un
 		// produit de marchés indépendants comme playerScorerAndWin.
+		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
+	}
+	if (leg.type === 'playerWinsASet') {
+		// "{Joueur} remporte au moins 1 set" -- somme de TOUTES les lignes du
+		// tableau Correct Score où le score du joueur (pas forcément vainqueur
+		// du match) est > 0. Plus large que winNotStraightSets : n'exige pas
+		// que le joueur gagne le match, juste qu'il gagne au moins 1 set.
+		const idx = designationFor(leg.player);
+		if (idx == null) return null;
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Correct Score'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalScoreLines(bodyText);
+		if (!rows.length) return null;
+		let probSum = 0;
+		let minCount = Infinity;
+		let found = 0;
+		for (const row of rows) {
+			const [a, b] = row.score.split(':').map((n) => parseInt(n, 10));
+			const playerSets = idx === 0 ? a : b;
+			if (playerSets === 0) continue; // blanchissage subi -- exclu
+			probSum += 1 / row.decimal;
+			minCount = Math.min(minCount, row.count);
+			found++;
+		}
+		if (!found) return null;
 		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
 	}
 	return null;

@@ -1881,9 +1881,16 @@ function parseLegs(eventName, description, sportKey) {
 	// marché Piwi direct "{Joueur} To Win A Set?" (Yes/No), vérifié en direct
 	// sur A.Zverev v Norrie. Absent chez Pinnacle (confirmé plus tôt cette
 	// session avec "Boisson remporte au moins 1 set" -- aucun marché trouvé).
+	// teamA/teamB ajoutés (même si le joueur seul suffit pour Piwi) pour
+	// permettre aussi la résolution Oddsportal en repli : somme de tous les
+	// scores exacts où CE joueur gagne >=1 set, peu importe qui gagne le
+	// match (contrairement à winNotStraightSets qui exige la victoire du
+	// match ET un set concédé) -- voir findOddsportalReference.
 	const playerWinsASetMatch = d.match(/^(.+?)\s+(?:remporte|gagne)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\s*\??\.?\s*$/i);
 	if (playerWinsASetMatch && !/respectivement/i.test(d)) {
-		return [{ type: 'playerWinsASet', player: playerWinsASetMatch[1].trim(), sport: sportKey }];
+		const cand = playerWinsASetMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		return [{ type: 'playerWinsASet', player: cand, team, teamA, teamB, sport: sportKey }];
 	}
 
 	// "Les 2 équipes marquent et plus/moins de N buts" -- marché Pinnacle
@@ -4890,6 +4897,34 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		// Exact (pas une approximation) : la définition du pari EST exactement
 		// "somme des scores exacts où l'adversaire gagne >=1 set", pas un
 		// produit de marchés indépendants comme playerScorerAndWin.
+		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
+	}
+	if (leg.type === 'playerWinsASet') {
+		// "{Joueur} remporte au moins 1 set" -- PEU IMPORTE qui gagne le match
+		// (contrairement à winNotStraightSets qui exige la victoire du match).
+		// Somme de tous les scores exacts où le nombre de sets DU JOUEUR
+		// (gagnant ou perdant le match) est >= 1 -- exclut uniquement le
+		// blanchissage SUBI par ce joueur (l'adversaire à 0 sets concédés).
+		// Construction demandée en direct par l'utilisatrice sur Z.Sonmez
+		// (2-1, 2-0 pour elle + 1-2, où elle prend 1 set en perdant).
+		const idx = designationFor(leg.player);
+		if (idx == null) return null;
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Correct Score'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalScoreLines(bodyText);
+		if (!rows.length) return null;
+		let probSum = 0;
+		let minCount = Infinity;
+		let found = 0;
+		for (const row of rows) {
+			const [a, b] = row.score.split(':').map((n) => parseInt(n, 10));
+			const playerSets = idx === 0 ? a : b;
+			if (playerSets === 0) continue; // blanchissage subi -- exclu
+			probSum += 1 / row.decimal;
+			minCount = Math.min(minCount, row.count);
+			found++;
+		}
+		if (!found) return null;
 		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
 	}
 	return null;
