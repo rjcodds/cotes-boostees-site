@@ -1853,8 +1853,14 @@ function parseLegs(eventName, description, sportKey) {
 	// Deuxième formulation réelle vue sur Unibet : "Les 2 joueurs gagnent un
 	// set ?" (pas de "chacun", mais "les 2/deux joueurs" comme sujet lève
 	// l'ambiguïté avec playerWinsASet qui vise UN seul joueur nommé).
+	// "vainqueur" exclu : "TeamX vainqueur et les 2 joueurs gagnent un set"
+	// contient cette même sous-chaîne mais désigne un marché DIFFÉRENT (voir
+	// winNotStraightSetsMatch plus bas, vérifié avant celui-ci -- bug réel
+	// trouvé en direct : sans cette exclusion, ce texte se faisait
+	// silencieusement absorber ici, perdant la condition de victoire).
 	if (
 		!/respectivement/i.test(d) &&
+		!/vainqueur/i.test(d) &&
 		/(?:gagnent?\s+chacune?|les\s+(?:2|deux)\s+joueurs\s+gagnent)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)
 	) {
 		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
@@ -2308,6 +2314,25 @@ function parseLegs(eventName, description, sportKey) {
 		}
 	}
 
+	// "{JoueurA} et {JoueurB} buteurs" -- AND (les DEUX doivent marquer, pas
+	// "l'un ou l'autre" comme playersEitherScorerAndWin), SANS condition de
+	// victoire (contrairement à playerScorerAndWinMatch juste au-dessus, qui
+	// exige un suffixe "et TeamX gagne" -- absent ici donc pas de collision).
+	// APPROXIMATION étiquetée : P(les deux marquent) = P(A marque) × P(B
+	// marque), traités comme indépendants (en vrai peut-être corrélés si
+	// même équipe -- même caveat que playerScorerAndWin). Vraie cote Coupe
+	// d'Allemagne vue sur Unibet (M.Beier et K.Karetsas).
+	const playersAllScoreMatch = d.match(/^(.+?)\s+et\s+(.+?)\s+buteurs?\s*$/i);
+	if (playersAllScoreMatch) {
+		const p1 = playersAllScoreMatch[1].trim();
+		const p2 = playersAllScoreMatch[2].trim();
+		const p1IsTeam = isExactlyTeamName(teamA, p1) || isExactlyTeamName(teamB, p1);
+		const p2IsTeam = isExactlyTeamName(teamA, p2) || isExactlyTeamName(teamB, p2);
+		if (!p1IsTeam && !p2IsTeam) {
+			return [{ type: 'playersAllScore', players: [p1, p2], sport: sportKey }];
+		}
+	}
+
 	// "{Joueur} buteur" -- marché Piwi direct "Player To Score" (aucun
 	// équivalent Pinnacle, voir la découverte du 2026-08-15 : Pinnacle n'a
 	// aucun marché buteur par match pour le foot, seulement un "Top
@@ -2358,8 +2383,62 @@ function parseLegs(eventName, description, sportKey) {
 	// sont deux formulations réelles vues sur Unibet -- "le match" est
 	// optionnel, le séparateur de score est soit "-" soit ":" (bug trouvé sur
 	// un vrai boost Alaves qui utilisait la forme courte + les deux-points).
+	// "sur le score de" toléré en plus (vraie cote tennis vue sur Unibet :
+	// "R.Jodar gagne le match sur le score de 3-1 ou 3-2" -- même mécanisme
+	// que le foot, juste un score EN SETS au lieu de buts, résolu uniquement
+	// via Oddsportal côté exchanges/Pinnacle n'ayant pas ce marché pour le
+	// tennis, voir findOddsportalReference).
 	const correctScoreMatch =
-		winningTeam && d.match(/gagne\s+(?:le\s+match\s+)?((?:\d+\s*[:-]\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*[:-]\s*\d+)\.?\s*$/i);
+		winningTeam &&
+		d.match(/gagne\s+(?:le\s+match\s+)?(?:sur\s+le\s+score\s+de\s+)?((?:\d+\s*[:-]\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*[:-]\s*\d+)\.?\s*$/i);
+
+	// "TeamX remporte le 1er set A-B ou C-D" (tennis) -- même mécanisme que
+	// correctScore, mais sur le score EN JEUX du 1er set (period:1) au lieu
+	// du score du match en sets. Réutilise le type 'correctScore' (déjà
+	// capable de sommer plusieurs scores exacts), seule la période change --
+	// voir findOddsportalReference qui bascule automatiquement sur l'onglet
+	// "1st Set" quand period===1. Vraie cote Unibet vue sur C.Moutet.
+	const winsSet1ScoreMatch = d.match(
+		/^(.+?)\s+remporte\s+le\s+1(?:er|ere|ère)?\s+set\s+(?:sur\s+le\s+score\s+de\s+)?((?:\d+\s*[:-]\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*[:-]\s*\d+)\s*$/i
+	);
+	if (winsSet1ScoreMatch) {
+		const cand = winsSet1ScoreMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			const scoreLines = [...winsSet1ScoreMatch[2].matchAll(/(\d+)\s*[:-]\s*(\d+)/g)].map((m) => [
+				parseInt(m[1], 10),
+				parseInt(m[2], 10),
+			]);
+			return [
+				{
+					type: 'correctScore',
+					team,
+					opponent: team === teamA ? teamB : teamA,
+					teamA,
+					teamB,
+					scoreLines,
+					period: 1,
+					sport: sportKey,
+				},
+			];
+		}
+	}
+
+	// "TeamX vainqueur et les 2/deux joueurs gagnent un set" (tennis) --
+	// mathématiquement équivalent à "TeamX gagne sans faire un blanchissage
+	// (l'adversaire gagne au moins 1 set)", donc à la somme de tous les
+	// scores exacts où TeamX gagne SAUF le score le plus large (3-0/2-0).
+	// Résolu dynamiquement (pas de liste de scores fixe -- s'adapte au
+	// format best-of-3 ou best-of-5 selon ce que la page renvoie réellement),
+	// voir findOddsportalReference. Vraie cote Unibet vue sur G.Monfils.
+	const winNotStraightSetsMatch = d.match(/^(.+?)\s+vainqueur\s+et\s+les\s+(?:2|deux)\s+joueurs\s+gagnent\s+(?:un|1)\s+set\s*$/i);
+	if (winNotStraightSetsMatch) {
+		const cand = winNotStraightSetsMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [{ type: 'winNotStraightSets', team, opponent: team === teamA ? teamB : teamA, teamA, teamB, sport: sportKey }];
+		}
+	}
 
 	if (winningTeam && totalMatch) {
 		return [
@@ -3831,6 +3910,19 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const combinedProb = (1 - noneScoreProb) * (1 / mlSels[0].back);
 		return combinedProb ? { decimal: 1 / combinedProb, exact: false } : null;
 	}
+	if (leg.type === 'playersAllScore') {
+		// "PlayerA et PlayerB buteurs" -- AND, pas de condition de victoire.
+		// APPROXIMATION : P(les deux marquent) = P(A marque) × P(B marque),
+		// traités comme indépendants -- voir son commentaire dans parseLegs.
+		const scorerMid = mk('Player To Score');
+		if (!scorerMid) return null;
+		const sels = await Promise.all(
+			leg.players.map((p) => fetchPiwiSelections(scorerMid, piwiEvent.eventId, (name) => teamsMatch(name, p)))
+		);
+		if (sels.some((s) => !s?.[0])) return null;
+		const combinedProb = sels.reduce((prod, s) => prod * (1 / s[0].back), 1);
+		return combinedProb ? { decimal: 1 / combinedProb, exact: false } : null;
+	}
 	return null;
 }
 
@@ -4462,8 +4554,8 @@ const ODDSPORTAL_COMPETITIONS_BY_SPORT = {
 	tennis: [
 		// Tournois de la semaine en cours -- pas d'ID stable, à mettre à jour
 		// manuellement quand le tournoi change (voir PIWI_COMPETITIONS_BY_SPORT.tennis).
-		'tennis/usa/atp-cincinnati',
-		'tennis/usa/wta-cincinnati',
+		'tennis/usa/atp-us-open',
+		'tennis/usa/wta-us-open',
 	],
 };
 
@@ -4744,10 +4836,15 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 		// "TeamX gagne le match A-B, C-D ou E-F" -- somme des scores exacts
 		// demandés (tout ou rien : un seul manquant -> silencieux, comme
 		// findCorrectScoreSum côté Pinnacle, plutôt qu'une somme partielle qui
-		// sous-estimerait la vraie probabilité). Contrairement au tennis (onglet
-		// direct), "Correct Score" foot est planqué sous "More", vérifié en
-		// direct -- même sous-menu que Draw No Bet.
-		const bodyText = await fetchOddsportalBodyText(env, match.url, ['More', 'Correct Score'], periodTab);
+		// sous-estimerait la vraie probabilité). Réutilisé aussi pour le tennis
+		// (score en SETS du match si period:0, ou en JEUX du 1er set si
+		// period:1 -- même table "Correct Score", periodTab bascule déjà
+		// l'onglet "1st Set" via oddsportalPeriodTab). Emplacement de l'onglet
+		// "Correct Score" différent selon le sport, vérifié en direct : visible
+		// directement dans la barre pour le tennis, planqué sous "More" pour le
+		// foot (même sous-menu que Draw No Bet).
+		const marketClicks = leg.sport === 'tennis' ? ['Correct Score'] : ['More', 'Correct Score'];
+		const bodyText = await fetchOddsportalBodyText(env, match.url, marketClicks, periodTab);
 		if (!bodyText) return null;
 		const rows = parseOddsportalScoreLines(bodyText);
 		if (!rows.length) return null;
@@ -4763,6 +4860,36 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 			minCount = Math.min(minCount, row.count);
 		}
 		if (!probSum) return null;
+		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
+	}
+	if (leg.type === 'winNotStraightSets') {
+		// "TeamX vainqueur et les 2 joueurs gagnent un set" -- équivalent à
+		// "TeamX gagne SANS blanchir" (l'adversaire gagne au moins 1 set).
+		// Contrairement à correctScore ci-dessus, la liste des scores n'est
+		// PAS fixée à l'avance (dépend du format best-of-3 ou best-of-5) --
+		// on prend TOUTES les lignes où TeamX gagne, on exclut seulement celle
+		// où l'adversaire est à 0 (le blanchissage), et on somme le reste.
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Correct Score'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalScoreLines(bodyText);
+		if (!rows.length) return null;
+		const idx = designationFor(leg.team);
+		if (idx == null) return null;
+		let probSum = 0;
+		let minCount = Infinity;
+		let found = 0;
+		for (const row of rows) {
+			const [a, b] = row.score.split(':').map((n) => parseInt(n, 10));
+			const [teamScore, oppScore] = idx === 0 ? [a, b] : [b, a];
+			if (teamScore <= oppScore || oppScore === 0) continue; // pas une victoire de TeamX, ou blanchissage exclu
+			probSum += 1 / row.decimal;
+			minCount = Math.min(minCount, row.count);
+			found++;
+		}
+		if (!found) return null;
+		// Exact (pas une approximation) : la définition du pari EST exactement
+		// "somme des scores exacts où l'adversaire gagne >=1 set", pas un
+		// produit de marchés indépendants comme playerScorerAndWin.
 		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
 	}
 	return null;
