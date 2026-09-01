@@ -1346,10 +1346,28 @@ function findTotal(leagues, teamA, teamB, side, points, period = 0) {
 				market = markets.find((mk) => mk.matchupId === gamesMatchup.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points === points);
 			}
 		}
+		let isExactPoints = !!market;
+		if (!market) {
+			// La ligne exacte du boost a pu bouger depuis sa création (les
+			// totaux évoluent en continu) -- repli sur la ligne alternative la
+			// plus proche plutôt qu'abandonner silencieusement. Bug réel trouvé
+			// sur un boost MLB ("plus de 7,5 runs" Nationals-Braves) : Pinnacle
+			// n'offre plus que 8/8.5/9/9.5(main)/10/10.5/11, plus de 7.5 du
+			// tout -- ref restait null alors qu'une vraie ligne très proche
+			// (8.0) existe. Tolérance 2 points, marqué exact:false (repris par
+			// formatPinnacleReference comme approximation étiquetée).
+			const altMarkets = markets.filter(
+				(mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === period && mk.prices?.[0]?.points != null
+			);
+			if (altMarkets.length) {
+				altMarkets.sort((x, y) => Math.abs(x.prices[0].points - points) - Math.abs(y.prices[0].points - points));
+				if (Math.abs(altMarkets[0].prices[0].points - points) <= 2) market = altMarkets[0];
+			}
+		}
 		if (!market) continue;
 		const p = market.prices.find((pr) => pr.designation === side);
 		if (!p) continue;
-		return { league: league.name, decimal: americanToDecimal(p.price), exact: true };
+		return { league: league.name, decimal: americanToDecimal(p.price), exact: isExactPoints, points: market.prices?.[0]?.points };
 	}
 	return null;
 }
@@ -2082,6 +2100,26 @@ function parseLegs(eventName, description, sportKey) {
 		if (htTeam && ftTeam) return [{ type: 'htft', htOutcome: htTeam, ftOutcome: ftTeam, teamA, teamB, sport: sportKey }];
 	}
 
+	// "Les 2/deux équipes marquent chacune au moins N runs/buts/points" -- PAS
+	// juste "les 2 équipes marquent" (BTTS classique, >=1 chacune, un marché
+	// bien plus facile). Bug réel trouvé sur un boost MLB (Arizona-Philadelphie,
+	// "chacune au moins 3 runs", cote boostée 2,40) : la regex BTTS nue plus
+	// bas matche sur "marquent" en tant que sous-chaîne (le \b ne vérifie que
+	// la fin du mot "marquent", pas ce qui suit), donc le seuil "chacune au
+	// moins 3 runs" tombait silencieusement dans le marché BTTS classique
+	// (>=1 run chacune, un événement bien plus probable) -- ligne de référence
+	// totalement fausse (1,12 affiché au lieu du ~2,4 réel). Doit être vérifié
+	// AVANT le fallback BTTS nu plus bas. Construit via team_total pour chaque
+	// équipe, indépendamment multipliés (approximation, aucun marché combiné
+	// direct chez Pinnacle/Piwi/Matchbook pour ce seuil).
+	const bothTeamTotalMatch = d.match(
+		/les\s+(?:2|deux)\s+equipes\s+marquent\s+chacune\s+au\s+moins\s+(\d+)\s*(?:runs?|buts?|points?)\b/i
+	);
+	if (bothTeamTotalMatch) {
+		const n = parseInt(bothTeamTotalMatch[1], 10);
+		return [{ type: 'bothTeamTotal', teamA, teamB, points: n - 0.5, period: isFirstHalf ? 1 : 0, sport: sportKey }];
+	}
+
 	// "TeamX gagne et les deux équipes marquent" -- combo direct chez Pinnacle
 	// ("Both Teams To Score/Winner" special, participants "Yes & TeamX"/"No &
 	// TeamX"/"Yes & Draw"/"No & Draw"), PAS juste "les 2 équipes marquent"
@@ -2728,6 +2766,12 @@ async function resolveLeg(leg, leagueData) {
 	if (leg.type === 'teamTotal') {
 		return findTeamTotal(leagues, leg.teamA, leg.teamB, leg.team, leg.side, leg.points, leg.period || 0);
 	}
+	if (leg.type === 'bothTeamTotal') {
+		const a = findTeamTotal(leagues, leg.teamA, leg.teamB, leg.teamA, 'over', leg.points, leg.period || 0);
+		const b = findTeamTotal(leagues, leg.teamA, leg.teamB, leg.teamB, 'over', leg.points, leg.period || 0);
+		if (!a || !b) return null;
+		return { league: a.league, decimal: 1 / ((1 / a.decimal) * (1 / b.decimal)), exact: false };
+	}
 	if (leg.type === 'teamToScore') {
 		return findTeamToScore(leagues, leg.teamA, leg.teamB, leg.team, leg.period || 0);
 	}
@@ -2889,7 +2933,7 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 		};
 	}
 	if (resolved.length === 1) {
-		return { type: 'single', league: resolved[0].league, decimal: resolved[0].decimal, exact: resolved[0].exact };
+		return { type: 'single', league: resolved[0].league, decimal: resolved[0].decimal, exact: resolved[0].exact, points: resolved[0].points };
 	}
 	// combo multi-matchs : legs indépendantes (matchs différents) -> multiplication exacte.
 	// Une leg "moneyline" n'a pas de .decimal direct (home/away/draw séparés) --
@@ -2910,6 +2954,8 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 		legs: resolved.map((r, i) => ({
 			label: legs[i].teamA ? `${legs[i].teamA} - ${legs[i].teamB}` : legs[i].team,
 			decimal: legDecimal(r),
+			points: r.points,
+			exact: r.exact,
 		})),
 		decimal: 1 / probProduct,
 		exact: true, // matchs différents = événements indépendants, pas d'approximation
@@ -2959,11 +3005,18 @@ function formatPinnacleReference(ref, boostDecimal) {
 		// marché combiné inexistant chez Pinnacle -- deux marchés indépendants
 		// multipliés, corrélation réelle non prise en compte, voir
 		// findDoubleChanceAndTotalApprox).
-		const approxTag = ref.exact === false ? ' ⚠️ approximatif (corrélation non prise en compte)' : '';
+		const approxTag =
+			ref.exact === false
+				? ref.points != null
+					? ` ⚠️ ligne la plus proche disponible (${ref.points})`
+					: ' ⚠️ approximatif (corrélation non prise en compte)'
+				: '';
 		return `📊 Pinnacle (${ref.league}) : ${ref.decimal.toFixed(2)}${approxTag}${edgeSuffix(boostDecimal, ref.decimal)}`;
 	}
 	if (ref.type === 'combo') {
-		const breakdown = ref.legs.map((l) => `${l.label} : ${l.decimal.toFixed(2)}`).join('\n');
+		const breakdown = ref.legs
+			.map((l) => `${l.label} : ${l.decimal.toFixed(2)}${l.exact === false && l.points != null ? ` (ligne la plus proche : ${l.points})` : ''}`)
+			.join('\n');
 		const product = ref.legs.map((l) => l.decimal.toFixed(2)).join(' × ');
 		return `📊 Pinnacle (combo ${ref.legCount} matchs) :\n${breakdown}\n${product} = ${ref.decimal.toFixed(2)}${edgeSuffix(boostDecimal, ref.decimal)}`;
 	}
@@ -3592,6 +3645,12 @@ async function resolvePiwiLeg(leg, piwiEvent, homeAway) {
 		const prefix = leg.side === 'over' ? 'Over' : 'Under';
 		const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name?.startsWith(prefix));
 		return sels?.[0] ? { decimal: sels[0].back } : null;
+	}
+	if (leg.type === 'bothTeamTotal') {
+		const a = await resolvePiwiLeg({ type: 'teamTotal', team: leg.teamA, side: 'over', points: leg.points }, piwiEvent, homeAway);
+		const b = await resolvePiwiLeg({ type: 'teamTotal', team: leg.teamB, side: 'over', points: leg.points }, piwiEvent, homeAway);
+		if (!a?.decimal || !b?.decimal) return null;
+		return { decimal: 1 / ((1 / a.decimal) * (1 / b.decimal)) };
 	}
 	if (leg.type === 'cardsTotal') {
 		const mid = mk(`Cards Over/Under ${leg.points}`);
@@ -4273,6 +4332,12 @@ function resolveMatchbookLeg(leg, mbEvent) {
 		const back = r ? matchbookBestBack(r) : null;
 		return back ? { decimal: back } : null;
 	}
+	if (leg.type === 'bothTeamTotal' && (leg.period || 0) === 0) {
+		const a = resolveMatchbookLeg({ type: 'teamTotal', team: leg.teamA, side: 'over', points: leg.points, period: 0 }, mbEvent);
+		const b = resolveMatchbookLeg({ type: 'teamTotal', team: leg.teamB, side: 'over', points: leg.points, period: 0 }, mbEvent);
+		if (!a?.decimal || !b?.decimal) return null;
+		return { decimal: 1 / ((1 / a.decimal) * (1 / b.decimal)) };
+	}
 	if (leg.type === 'doubleChance') {
 		const back = matchbookDoubleChancePrice(markets, leg.team);
 		return back ? { decimal: back } : null;
@@ -4936,6 +5001,17 @@ export default {
 		if (url.pathname === '/backfill-pinnacle') {
 			const result = await backfillPinnacleRefs(env);
 			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-pinnacle') {
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			const d = url.searchParams.get('d') || `${a} gagne`;
+			const league = url.searchParams.get('league') || null;
+			const sport = url.searchParams.get('sport') || 'football';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&d=Description&sport=football&league=(optionnel)', { status: 400 });
+			const legs = parseLegs(`${a} - ${b}`, d, sport);
+			const ref = await findPinnacleReference(`${a} - ${b}`, d, league, sport);
+			return new Response(JSON.stringify({ legs, ref, line: formatPinnacleReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/test-piwi-teams') {
 			const a = url.searchParams.get('a');
