@@ -1191,6 +1191,37 @@ function findScheduleHomeWin(leagues, count, hour, minute) {
 	return null;
 }
 
+// Même principe que findScheduleHomeWin, mais total buts DE L'ÉQUIPE À
+// DOMICILE (marché "team_total", side:'home') au lieu du résultat du match --
+// "Chaque équipe à domicile marque au moins N buts (N matchs du jour)",
+// vraie cote Liiga vue sur Winamax.
+function findScheduleHomeTeamTotal(leagues, count, hour, minute, side, points) {
+	for (const { league, matchups, markets } of leagues) {
+		const matching = findScheduledMatchups(matchups, hour, minute);
+		if (matching.length !== count) continue;
+
+		const subLegs = [];
+		let probProduct = 1;
+		let allFound = true;
+		for (const m of matching) {
+			const market = markets.find(
+				(mk) => mk.matchupId === m.id && mk.type === 'team_total' && mk.period === 0 && mk.side === 'home' && mk.prices?.[0]?.points === points
+			);
+			const p = market?.prices.find((pr) => pr.designation === side);
+			if (!p) {
+				allFound = false;
+				break;
+			}
+			const decimal = americanToDecimal(p.price);
+			probProduct *= 1 / decimal;
+			subLegs.push({ label: (m.participants || []).map((pp) => pp.name).join(' - '), decimal });
+		}
+		if (!allFound) continue;
+		return { league: league.name, decimal: 1 / probProduct, exact: true, subLegs };
+	}
+	return null;
+}
+
 // period 0 = match complet, period 1 = 1ère mi-temps (foot/hand/etc.) -- même
 // marché "moneyline" chez Pinnacle, juste une période différente.
 function findMoneyline(leagues, teamA, teamB, period = 0) {
@@ -1322,7 +1353,7 @@ function findTeamTotal(leagues, teamA, teamB, teamName, side, points, period = 0
 // "Over" la ligne totale) -- on vérifie donc explicitement que la ligne du
 // marché Total vaut 2.5 avant de résoudre, sinon silencieux plutôt qu'un
 // chiffre faux.
-function findBothWinASet(leagues, teamA, teamB) {
+function findBothWinASet(leagues, teamA, teamB, points = 2.5) {
 	for (const { league, matchups, markets } of leagues) {
 		const matchup = matchups.find(
 			(m) =>
@@ -1333,7 +1364,15 @@ function findBothWinASet(leagues, teamA, teamB) {
 		);
 		if (!matchup) continue;
 		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0);
-		if (!market || market.prices?.[0]?.points !== 2.5) continue; // pas confirmé best-of-3 -> silencieux
+		// points doit correspondre EXACTEMENT à la ligne demandée -- pas de
+		// repli sur une autre ligne : "plus de 3,5 sets" (best-of-5, ligne
+		// Pinnacle réelle 4.5) n'est pas la même chose que "plus de 2,5 sets"
+		// (best-of-3, ligne 2.5). Silencieux si la ligne exacte n'existe pas
+		// plutôt que de deviner. Bug réel trouvé sur un combo ATP US Open
+		// (Grand Chelem, best-of-5) : l'ancienne version ignorait le seuil
+		// demandé et vérifiait toujours contre 2.5, ratant silencieusement
+		// tout best-of-5 (jamais de ligne 2.5 chez Pinnacle pour ces matchs).
+		if (!market || market.prices?.[0]?.points !== points) continue;
 		const p = market.prices.find((pr) => pr.designation === 'over');
 		if (!p) continue;
 		return { league: league.name, decimal: americanToDecimal(p.price), exact: true };
@@ -1459,6 +1498,9 @@ function parseLegs(eventName, description, sportKey) {
 		/plus\s+de\s+(\d+(?:[.,]\d+)?)\s*sets?\s+(?:lors de |dans )?chacun des matchs suivants\s*:\s*(.+)/i
 	);
 	if (multiSetsMatch) {
+		// Seuil réellement demandé ("plus de 3,5 sets" = match qui va au 5e
+		// set = ligne Pinnacle 3.5, pas toujours 2.5 -- voir findBothWinASet).
+		const points = parseFloat(multiSetsMatch[1].replace(',', '.'));
 		const pairs = multiSetsMatch[2]
 			.split(/,\s*|\s+et\s+/)
 			.map((s) => s.trim())
@@ -1467,7 +1509,7 @@ function parseLegs(eventName, description, sportKey) {
 		for (const pair of pairs) {
 			const m2 = pair.match(/^([A-ZÀ-Ý][\w .'-]*?)\s+-\s+([A-ZÀ-Ý][\w .'-]*?)$/);
 			if (!m2) continue;
-			legs.push({ type: 'bothWinASet', teamA: m2[1].trim(), teamB: m2[2].trim(), sport: sportKey });
+			legs.push({ type: 'bothWinASet', teamA: m2[1].trim(), teamB: m2[2].trim(), points, sport: sportKey });
 		}
 		if (legs.length >= 2) return legs;
 	}
@@ -1578,14 +1620,14 @@ function parseLegs(eventName, description, sportKey) {
 	// compétition (heure + date du jour) -- voir resolveScheduleBtts.
 	const scheduleBttsMatch =
 		/les\s+2\s+equipes|les\s+deux\s+equipes/i.test(d) &&
-		d.match(/marquent\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?/i);
+		d.match(/marquent\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+(?:a|de)\s+(\d{1,2})(?:h(\d{2})?|:(\d{2}))/i);
 	if (scheduleBttsMatch) {
 		return [
 			{
 				type: 'scheduleBtts',
 				count: parseInt(scheduleBttsMatch[1], 10),
 				hour: parseInt(scheduleBttsMatch[2], 10),
-				minute: scheduleBttsMatch[3] ? parseInt(scheduleBttsMatch[3], 10) : 0,
+				minute: scheduleBttsMatch[3] ? parseInt(scheduleBttsMatch[3], 10) : scheduleBttsMatch[4] ? parseInt(scheduleBttsMatch[4], 10) : 0,
 				sport: sportKey,
 			},
 		];
@@ -1596,7 +1638,7 @@ function parseLegs(eventName, description, sportKey) {
 	// moins un but" = Over 0.5). Vraie cote Ligue des Champions vue sur
 	// Winamax, jamais parsée avant (ni Pinnacle ni les exchanges).
 	const scheduleTotalMatch = d.match(
-		/au\s+moins\s+(?:un|1)\s+but\s+marque\s*(en\s+(?:1ere|1ère|premiere|première)\s+mi-?temps)?\s*lors\s+de\s+chacun\s+des\s+(\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?/i
+		/au\s+moins\s+(?:un|1)\s+but\s+marque\s*(en\s+(?:1ere|1ère|premiere|première)\s+mi-?temps)?\s*lors\s+de\s+chacun\s+des\s+(\d+)\s+matchs?\s+(?:a|de)\s+(\d{1,2})(?:h(\d{2})?|:(\d{2}))/i
 	);
 	if (scheduleTotalMatch) {
 		return [
@@ -1604,7 +1646,7 @@ function parseLegs(eventName, description, sportKey) {
 				type: 'scheduleTotal',
 				count: parseInt(scheduleTotalMatch[2], 10),
 				hour: parseInt(scheduleTotalMatch[3], 10),
-				minute: scheduleTotalMatch[4] ? parseInt(scheduleTotalMatch[4], 10) : 0,
+				minute: scheduleTotalMatch[4] ? parseInt(scheduleTotalMatch[4], 10) : scheduleTotalMatch[5] ? parseInt(scheduleTotalMatch[5], 10) : 0,
 				side: 'over',
 				points: 0.5,
 				period: scheduleTotalMatch[1] ? 1 : 0,
@@ -1619,9 +1661,13 @@ function parseLegs(eventName, description, sportKey) {
 	// d'Allemagne vue sur Winamax ("Plus de 2,5 buts dans chacun des 3 matchs
 	// à 18h00") -- sans ce parseur dédié, ce texte tombait dans le fallback
 	// total simple plus bas (team-agnostic) avec des "équipes" bidon, donnant
-	// une mauvaise résolution silencieuse plutôt qu'un échec propre.
+	// une mauvaise résolution silencieuse plutôt qu'un échec propre. Format
+	// horaire toléré en "à HHhMM" OU "de HH:MM" (bug réel trouvé en direct sur
+	// "... dans chacun des 6 matchs de 20:45" -- l'ancienne regex n'acceptait
+	// que "à" + "HHhMM", donc ce texte tombait dans le même piège de
+	// résolution silencieuse fausse que ce commentaire décrit).
 	const scheduleTotalHourMatch = d.match(
-		/(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?/i
+		/(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*buts?\s+dans\s+chacun\s+des\s+(\d+)\s+matchs?\s+(?:a|de)\s+(\d{1,2})(?:h(\d{2})?|:(\d{2}))/i
 	);
 	if (scheduleTotalHourMatch) {
 		return [
@@ -1629,7 +1675,11 @@ function parseLegs(eventName, description, sportKey) {
 				type: 'scheduleTotal',
 				count: parseInt(scheduleTotalHourMatch[3], 10),
 				hour: parseInt(scheduleTotalHourMatch[4], 10),
-				minute: scheduleTotalHourMatch[5] ? parseInt(scheduleTotalHourMatch[5], 10) : 0,
+				minute: scheduleTotalHourMatch[5]
+					? parseInt(scheduleTotalHourMatch[5], 10)
+					: scheduleTotalHourMatch[6]
+					? parseInt(scheduleTotalHourMatch[6], 10)
+					: 0,
 				side: /plus/i.test(scheduleTotalHourMatch[1]) ? 'over' : 'under',
 				points: parseFloat(scheduleTotalHourMatch[2].replace(',', '.')),
 				period: 0,
@@ -1664,17 +1714,89 @@ function parseLegs(eventName, description, sportKey) {
 	// domicile dans chacun des N matchs programmés à la même heure, sans nom
 	// d'équipe (calendrier Pinnacle de la compétition, comme scheduleBtts/
 	// scheduleTotal). Vraie cote Pro D2 vue sur Winamax.
-	const scheduleHomeWinMatch = d.match(/chaque\s+equipe\s+a\s+domicile\s+gagne\s*\((\d+)\s+matchs?\s+a\s+(\d{1,2})h(\d{2})?\)/i);
+	const scheduleHomeWinMatch = d.match(/chaque\s+equipe\s+a\s+domicile\s+gagne\s*\((\d+)\s+matchs?\s+(?:a|de)\s+(\d{1,2})(?:h(\d{2})?|:(\d{2}))\)/i);
 	if (scheduleHomeWinMatch) {
 		return [
 			{
 				type: 'scheduleHomeWin',
 				count: parseInt(scheduleHomeWinMatch[1], 10),
 				hour: parseInt(scheduleHomeWinMatch[2], 10),
-				minute: scheduleHomeWinMatch[3] ? parseInt(scheduleHomeWinMatch[3], 10) : 0,
+				minute: scheduleHomeWinMatch[3]
+					? parseInt(scheduleHomeWinMatch[3], 10)
+					: scheduleHomeWinMatch[4]
+					? parseInt(scheduleHomeWinMatch[4], 10)
+					: 0,
 				sport: sportKey,
 			},
 		];
+	}
+
+	// "Chaque équipe à domicile marque au moins N buts lors des N matchs du
+	// jour" -- total buts DE L'ÉQUIPE À DOMICILE (pas le score du match
+	// entier), dans chacun des N matchs de la journée, sans heure précise
+	// (comme scheduleTotalDayMatch). Vraie cote Liiga (hockey) vue sur
+	// Winamax, jamais parsée avant.
+	const scheduleHomeTeamTotalMatch = d.match(
+		/chaque\s+equipe\s+a\s+domicile\s+marque\s+au\s+moins\s+(\d+)\s*buts?\s+lors\s+des\s+(\d+)\s+matchs?\s+du\s+jour/i
+	);
+	if (scheduleHomeTeamTotalMatch) {
+		return [
+			{
+				type: 'scheduleHomeTeamTotal',
+				count: parseInt(scheduleHomeTeamTotalMatch[2], 10),
+				hour: null,
+				minute: null,
+				side: 'over',
+				points: parseInt(scheduleHomeTeamTotalMatch[1], 10) - 0.5,
+				sport: sportKey,
+			},
+		];
+	}
+
+	// Combo multi-matchs total buts D'UNE équipe précise, noms explicites :
+	// "TeamA et TeamB réalisent chacun au moins N buts/points/runs
+	// (respectivement contre OppA et OppB)" -- même forme que
+	// multiMoneylineMatch/multiMarginMatch, mais condition = team_total (déjà
+	// câblé via findTeamTotal), pas victoire/marge. Vraie cote NPB (baseball)
+	// vue sur Winamax.
+	const multiTeamTotalNamedMatch = d.match(
+		/(.+?)\s+realisent\s+chacun\s+au\s+moins\s+(\d+)\s*(?:buts?|points?|runs?|jeux?)\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiTeamTotalNamedMatch) {
+		const points = parseInt(multiTeamTotalNamedMatch[2], 10) - 0.5;
+		const teamNames = multiTeamTotalNamedMatch[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiTeamTotalNamedMatch[3].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({
+				type: 'teamTotal',
+				teamA: team,
+				teamB: oppNames[i],
+				team,
+				side: 'over',
+				points,
+				period: 0,
+				sport: sportKey,
+			}));
+		}
+	}
+
+	// Combo multi-matchs sur score exact EN SETS (tennis), noms explicites :
+	// "TeamA et TeamB gagnent chacune leur match N-M (respectivement contre
+	// OppA et OppB)" -- même forme que multiMoneylineMatch, mais avec un
+	// score de sets précis au lieu d'une simple victoire (setScore déjà
+	// câblé pour le score exact single-match). Vraie cote WTA US Open vue sur
+	// Winamax -- AVANT multiMoneylineMatch dans l'ordre des tests : sinon ce
+	// dernier matcherait juste "leur match" et perdrait le score exact.
+	const multiSetScoreNamedMatch = d.match(
+		/(.+?)\s+gagnent\s+chacune?\s+leur\s+match\s+(\d+)-(\d+)\s*\(respectivement\s+contre\s+(.+?)\)/i
+	);
+	if (multiSetScoreNamedMatch) {
+		const score = `${multiSetScoreNamedMatch[2]}-${multiSetScoreNamedMatch[3]}`;
+		const teamNames = multiSetScoreNamedMatch[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		const oppNames = multiSetScoreNamedMatch[4].split(/,\s*|\s+et\s+/).map((s) => s.trim());
+		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
+			return teamNames.map((team, i) => ({ type: 'setScore', teamA: team, teamB: oppNames[i], team, score, sport: sportKey }));
+		}
 	}
 
 	// Pari même-match combiné : "TeamX gagne et Plus/Moins de Y buts/points"
@@ -2505,7 +2627,7 @@ async function resolveLeg(leg, leagueData) {
 		return findHalfTimeFullTime(leagues, leg.teamA, leg.teamB, leg.htOutcome, leg.ftOutcome);
 	}
 	if (leg.type === 'bothWinASet') {
-		return findBothWinASet(leagues, leg.teamA, leg.teamB);
+		return findBothWinASet(leagues, leg.teamA, leg.teamB, leg.points || 2.5);
 	}
 	if (leg.type === 'scheduleBtts') {
 		return findScheduleBtts(leagues, leg.count, leg.hour, leg.minute);
@@ -2515,6 +2637,9 @@ async function resolveLeg(leg, leagueData) {
 	}
 	if (leg.type === 'scheduleHomeWin') {
 		return findScheduleHomeWin(leagues, leg.count, leg.hour, leg.minute);
+	}
+	if (leg.type === 'scheduleHomeTeamTotal') {
+		return findScheduleHomeTeamTotal(leagues, leg.count, leg.hour, leg.minute, leg.side, leg.points);
 	}
 	if (leg.type === 'moneyline') {
 		const found = findMoneyline(leagues, leg.teamA, leg.teamB, leg.period || 0);
@@ -2795,7 +2920,7 @@ async function formatMonitoringMessage(env, event) {
 		let teams = null;
 		try {
 			legs = parseLegs(boost.eventName, boost.description, boost.sport);
-			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin'].includes(legs[0].type);
+			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin', 'scheduleHomeTeamTotal'].includes(legs[0].type);
 			let piwiRef = null;
 			if (isSchedule) {
 				piwiRef = await findPiwiScheduleReference(legs[0]);
@@ -2815,7 +2940,7 @@ async function formatMonitoringMessage(env, event) {
 		// (usage perso, jamais republiée aux abonnés) -- deuxième source
 		// indépendante, utile pour comparer/prendre la cote la plus haute.
 		try {
-			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin'].includes(legs[0].type);
+			const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin', 'scheduleHomeTeamTotal'].includes(legs[0].type);
 			let matchbookRef = null;
 			if (isSchedule) {
 				matchbookRef = await findMatchbookScheduleReference(legs[0]);
@@ -3051,7 +3176,7 @@ async function backfillPinnacleRefs(env) {
 			let matchbookLine = null;
 			try {
 				const legs = parseLegs(boost.eventName, boost.description, boost.sport);
-				const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin'].includes(legs[0].type);
+				const isSchedule = legs?.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin', 'scheduleHomeTeamTotal'].includes(legs[0].type);
 				if (isSchedule) {
 					piwiLine = formatPiwiReference(await findPiwiScheduleReference(legs[0]));
 					matchbookLine = formatMatchbookReference(await findMatchbookScheduleReference(legs[0]));
@@ -4717,6 +4842,21 @@ export default {
 			return new Response(raw || JSON.stringify({ updatedAt: null, boosts: [] }), {
 				headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
 			});
+		}
+		if (url.pathname === '/digest-list-debug') {
+			// Route de debug temporaire (à supprimer après le reporting) --
+			// liste le détail complet des digestitem du jour (pas juste
+			// count/withRef/best comme /digest-data), pour reconstruire ce qui a
+			// été envoyé sur le canal spawn sans accès à l'historique Telegram.
+			const date = url.searchParams.get('date') || todayKey();
+			const list = await env.SEEN_BOOSTS.list({ prefix: `digestitem:${date}:` });
+			const items = [];
+			for (const key of list.keys) {
+				const raw = await env.SEEN_BOOSTS.get(key.name);
+				if (!raw) continue;
+				items.push({ marketId: key.name.split(':')[2], ...JSON.parse(raw) });
+			}
+			return new Response(JSON.stringify({ date, items }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/digest-data') {
 			// Symétrique de la route côté Unibet -- Winamax calculait déjà ses
