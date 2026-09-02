@@ -5002,6 +5002,21 @@ export default {
 			const result = await backfillPinnacleRefs(env);
 			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
 		}
+		if (url.pathname === '/test-monitoring-message') {
+			// Rejoue formatMonitoringMessage EXACTEMENT comme au moment d'un vrai
+			// "add", pour voir le message qui serait réellement posté sur le canal
+			// spawn (le digest KV ne garde que l'edge Pinnacle, pas les lignes
+			// Piwi/Matchbook/Oddsportal -- utile pour répondre à "pourquoi il n'y
+			// a pas de ligne de référence" sans deviner).
+			const eventName = url.searchParams.get('eventName');
+			const description = url.searchParams.get('description');
+			const sport = url.searchParams.get('sport') || 'tennis';
+			const newOdds = url.searchParams.get('newOdds') || '3,00';
+			if (!eventName || !description) return new Response('usage: ?eventName=...&description=...&sport=tennis&newOdds=3,00', { status: 400 });
+			const boost = { eventName, description, sport, league: null, newOdds, marketId: 'debug', maxStake: 20, kickoff: '', sportEmoji: '' };
+			const result = await formatMonitoringMessage(env, { type: 'add', boost });
+			return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
+		}
 		if (url.pathname === '/test-pinnacle') {
 			const a = url.searchParams.get('a');
 			const b = url.searchParams.get('b');
