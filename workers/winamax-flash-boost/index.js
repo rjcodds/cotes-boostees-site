@@ -286,7 +286,7 @@ const EUROPEAN_COMPETITION_KEYWORDS = [
 ];
 const DOMESTIC_LEAGUE_COUNTRY = [
 	[/ligue 1|ligue 2|coupe de france/i, 'France'],
-	[/premier league|fa cup|efl cup|championship anglais/i, 'England'],
+	[/premier league|fa cup|efl cup|championship/i, 'England'],
 	[/serie a|serie b|coppa italia/i, 'Italy'],
 	[/liga(?!ue)|copa del rey/i, 'Spain'],
 	[/bundesliga|dfb.?pokal/i, 'Germany'],
@@ -2893,7 +2893,22 @@ async function findPinnacleReferenceForSport(eventName, description, leagueLabel
 		resolved = await resolveLegsAgainstLeague(legs, candidate);
 		if (resolved) break;
 	}
-	if (!resolved && leagueList.length) {
+	// Le scan complet du sport ci-dessous ("essaie toutes les ligues jusqu'à
+	// ce qu'une résolve") est sûr pour les legs à équipes nommées : une
+	// mauvaise ligue échoue simplement à trouver les bonnes équipes. Pour les
+	// combos "schedule" (scheduleBtts/scheduleTotal/scheduleHomeWin/
+	// scheduleHomeTeamTotal -- "N matchs du jour", sans nom d'équipe), rien
+	// ne vérifie l'identité de la ligue : N'IMPORTE QUELLE ligue avec assez
+	// de matchs du jour "réussit" silencieusement. Bug réel trouvé sur une
+	// cote "Championship" (Unibet) : le libellé ne matchait pas
+	// leagueCountryHint (regex attendait "championship anglais", jamais
+	// fourni tel quel par le bookmaker), donc aucun candidat fort -> scan
+	// aveugle -> ligue égyptienne sans rapport retournée avec confiance
+	// (Piwi, lui, avait la bonne ligue -- la comparaison des deux a révélé
+	// l'erreur). Corrigé le hint en même temps, mais on ne fait plus jamais
+	// confiance au scan aveugle pour ces types, quel que soit le hint.
+	const isSchedule = legs.length === 1 && ['scheduleBtts', 'scheduleTotal', 'scheduleHomeWin', 'scheduleHomeTeamTotal'].includes(legs[0].type);
+	if (!resolved && leagueList.length && !isSchedule) {
 		const tried = new Set(candidates.map((c) => c.id));
 		resolved = await scanAllLeaguesForLegs(legs, leagueList, tried);
 	}
@@ -5192,8 +5207,9 @@ export default {
 			const description = url.searchParams.get('description');
 			const sport = url.searchParams.get('sport') || 'tennis';
 			const newOdds = url.searchParams.get('newOdds') || '3,00';
-			if (!eventName || !description) return new Response('usage: ?eventName=...&description=...&sport=tennis&newOdds=3,00', { status: 400 });
-			const boost = { eventName, description, sport, league: null, newOdds, marketId: 'debug', maxStake: 20, kickoff: '', sportEmoji: '' };
+			const league = url.searchParams.get('league') || null;
+			if (!eventName || !description) return new Response('usage: ?eventName=...&description=...&sport=tennis&newOdds=3,00&league=(optionnel)', { status: 400 });
+			const boost = { eventName, description, sport, league, newOdds, marketId: 'debug', maxStake: 20, kickoff: '', sportEmoji: '' };
 			const result = await formatMonitoringMessage(env, { type: 'add', boost });
 			return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
