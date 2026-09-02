@@ -1083,6 +1083,15 @@ function findScheduledMatchups(matchups, hour, minute) {
 	const today = `${todayParts.find((p) => p.type === 'year').value}-${todayParts.find((p) => p.type === 'month').value}-${todayParts.find((p) => p.type === 'day').value}`;
 
 	return matchups.filter((m) => {
+		// Exclut les matchups "prop" du même jour partageant les mêmes équipes
+		// (ex: "Millwall (Bookings) - Wrexham (Bookings)", un marché cartons à
+		// part entière, PAS un vrai 2e match) -- isRootMatchup seul ne suffit
+		// pas à les exclure (ils passent le test comme s'ils étaient le match
+		// principal). Bug réel trouvé sur "chacun des 4 matchs du jour"
+		// Championship (Unibet) : 4 vrais matchs + leurs 4 doublons "Bookings"
+		// = 8 matchups, le décompte exact attendu (4) ne tombait jamais juste,
+		// combo jamais résolu par Pinnacle alors que Piwi trouvait bien les 4.
+		if ((m.participants || []).some((p) => /\s\([A-Za-zÀ-ÿ]+\)\s*$/.test(p.name || ''))) return false;
 		if (!isRootMatchup(m) || m.type !== 'matchup' || !m.startTime) return false;
 		const parts = new Intl.DateTimeFormat('fr-FR', {
 			timeZone: 'Europe/Paris',
