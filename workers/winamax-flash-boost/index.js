@@ -1428,8 +1428,10 @@ function parseLegs(eventName, description, sportKey) {
 	}
 
 	// Combo multi-matchs : "TeamA (vs OppA), TeamB (vs OppB) et TeamC (vs OppC)
-	// gagnent chacun de N buts/points ou plus" -- la condition de marge est partagée.
-	const marginAll = d.match(/gagnent?\s+chacun\s+(?:de\s+)?(\d+)\s*(?:buts?|points?|runs?|jeux?)\s+ou\s+plus/i);
+	// gagnent chacun de N buts/points ou plus" -- la condition de marge est
+	// partagée. "chacune" aussi accepté (accord féminin, ex. joueuses de
+	// tennis) -- même bug class que joueurs/joueuses trouvé sur Diane Parry.
+	const marginAll = d.match(/gagnent?\s+chacune?\s+(?:de\s+)?(\d+)\s*(?:buts?|points?|runs?|jeux?)\s+ou\s+plus/i);
 	if (marginAll) {
 		const margin = parseInt(marginAll[1], 10);
 		const teamPattern = /(?:^|,\s*|-\s|et\s)([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\s*\(vs\.?\s+([A-ZÀ-Ý][\w.'-]*(?:\s[A-ZÀ-Ý][\w.'-]*)*)\)/g;
@@ -2339,7 +2341,7 @@ function parseLegs(eventName, description, sportKey) {
 	// laissant silencieux ; maintenant qu'on a Piwi, un chiffre approximatif
 	// étiqueté vaut mieux que rien, à la demande explicite de l'utilisatrice).
 	const playerScorerAndWinMatch =
-		d.match(/^(.+?)\s+buteur\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i) ||
+		d.match(/^(.+?)\s+buteu(?:r|se)\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i) ||
 		d.match(/^(.+?)\s+marque\s+et\s+(.+?)\s+gagne(?:\s+le\s+match)?\.?\s*$/i);
 	if (playerScorerAndWinMatch) {
 		const playerCand = playerScorerAndWinMatch[1].trim();
@@ -2370,7 +2372,7 @@ function parseLegs(eventName, description, sportKey) {
 	// marque), traités comme indépendants (en vrai peut-être corrélés si
 	// même équipe -- même caveat que playerScorerAndWin). Vraie cote Coupe
 	// d'Allemagne vue sur Unibet (M.Beier et K.Karetsas).
-	const playersAllScoreMatch = d.match(/^(.+?)\s+et\s+(.+?)\s+buteurs?\s*$/i);
+	const playersAllScoreMatch = d.match(/^(.+?)\s+et\s+(.+?)\s+buteu(?:rs?|ses?)\s*$/i);
 	if (playersAllScoreMatch) {
 		const p1 = playersAllScoreMatch[1].trim();
 		const p2 = playersAllScoreMatch[2].trim();
@@ -2385,7 +2387,7 @@ function parseLegs(eventName, description, sportKey) {
 	// équivalent Pinnacle, voir la découverte du 2026-08-15 : Pinnacle n'a
 	// aucun marché buteur par match pour le foot, seulement un "Top
 	// Goalscorer" sur la saison entière).
-	const playerScorerMatch = d.match(/^(.+?)\s+buteur\.?\s*$/i);
+	const playerScorerMatch = d.match(/^(.+?)\s+buteu(?:r|se)\.?\s*$/i);
 	if (playerScorerMatch) {
 		return [{ type: 'playerScorer', player: playerScorerMatch[1].trim(), sport: sportKey }];
 	}
