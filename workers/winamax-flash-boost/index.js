@@ -1873,17 +1873,21 @@ function parseLegs(eventName, description, sportKey) {
 	// Deuxième formulation réelle vue sur Unibet : "Les 2 joueurs gagnent un
 	// set ?" (pas de "chacun", mais "les 2/deux joueurs" comme sujet lève
 	// l'ambiguïté avec playerWinsASet qui vise UN seul joueur nommé).
-	// "vainqueur" exclu : "TeamX vainqueur et les 2 joueurs gagnent un set"
-	// contient cette même sous-chaîne mais désigne un marché DIFFÉRENT (voir
-	// winNotStraightSetsMatch plus bas, vérifié avant celui-ci -- bug réel
-	// trouvé en direct : sans cette exclusion, ce texte se faisait
+	// "vainqueur"/"gagne et" exclus : "TeamX vainqueur et les 2 joueurs
+	// gagnent un set" ET "TeamX gagne et les 2 joueurs gagnent un set"
+	// contiennent cette même sous-chaîne mais désignent un marché DIFFÉRENT
+	// (voir winNotStraightSetsMatch plus bas, vérifié avant celui-ci -- bug
+	// réel trouvé en direct : sans cette exclusion, ce texte se faisait
 	// silencieusement absorber ici, perdant la condition de victoire). Bug
 	// réel trouvé sur une cote Diane Parry (tennis féminin) : "joueuses" (pas
 	// "joueurs") n'était pas dans l'alternation -- legs restait null, aucune
-	// source jamais tentée, alors que le marché existe bel et bien.
+	// source jamais tentée, alors que le marché existe bel et bien. Deuxième
+	// bug réel trouvé sur une cote Rinderknech (Unibet, "gagne et" pas
+	// "vainqueur et") : l'exclusion ne couvrait que "vainqueur", pas "gagne
+	// et" -- même perte silencieuse de la condition de victoire.
 	if (
 		!/respectivement/i.test(d) &&
-		!/vainqueur/i.test(d) &&
+		!/(?:vainqueur|gagne)\s+et\s+les\s+(?:2|deux)\s+(?:joueurs|joueuses)\s+gagnent/i.test(d) &&
 		/(?:gagnent?\s+chacune?|les\s+(?:2|deux)\s+(?:joueurs|joueuses)\s+gagnent)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)
 	) {
 		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
@@ -2474,14 +2478,19 @@ function parseLegs(eventName, description, sportKey) {
 		}
 	}
 
-	// "TeamX vainqueur et les 2/deux joueurs gagnent un set" (tennis) --
+	// "TeamX vainqueur/gagne et les 2/deux joueurs gagnent un set" (tennis) --
 	// mathématiquement équivalent à "TeamX gagne sans faire un blanchissage
 	// (l'adversaire gagne au moins 1 set)", donc à la somme de tous les
 	// scores exacts où TeamX gagne SAUF le score le plus large (3-0/2-0).
 	// Résolu dynamiquement (pas de liste de scores fixe -- s'adapte au
 	// format best-of-3 ou best-of-5 selon ce que la page renvoie réellement),
-	// voir findOddsportalReference. Vraie cote Unibet vue sur G.Monfils.
-	const winNotStraightSetsMatch = d.match(/^(.+?)\s+vainqueur\s+et\s+les\s+(?:2|deux)\s+(?:joueurs|joueuses)\s+gagnent\s+(?:un|1)\s+set\s*$/i);
+	// voir findOddsportalReference. Vraie cote Unibet vue sur G.Monfils
+	// ("vainqueur et") puis sur A.Rinderknech ("gagne et", pas "vainqueur et"
+	// -- même sens, formulation Unibet différente, ajoutée après un bug réel
+	// où ce texte tombait silencieusement dans bothWinASet).
+	const winNotStraightSetsMatch = d.match(
+		/^(.+?)\s+(?:vainqueur|gagne)\s+et\s+les\s+(?:2|deux)\s+(?:joueurs|joueuses)\s+gagnent\s+(?:un|1)\s+set\s*$/i
+	);
 	if (winNotStraightSetsMatch) {
 		const cand = winNotStraightSetsMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
@@ -2675,7 +2684,26 @@ async function resolveLeg(leg, leagueData) {
 	if (leg.type === 'winAndTotal') {
 		const direct = findCombinedWinTotal(leagues, leg.team, leg.opponent, leg.team, leg.side, leg.points);
 		if (direct) return direct;
-		return null; // pas d'approximation : silencieux si le marché combiné direct n'existe pas
+		// Pas de marché combiné direct (spécial Pinnacle "Équipe & Over/Under N"
+		// absent, ligne de boost ne correspondant à aucun seuil publié) --
+		// repli en approximation : produit moneyline × total, deux marchés
+		// indépendants. Corrélation jugée faible pour ce type de combo en
+		// tennis (contrairement au football où marge de victoire et total
+		// buts sont fortement liés) : gagner en 2 sets serrés peut donner
+		// autant de jeux que gagner en 3 sets, donc l'approximation reste
+		// raisonnable -- exact:false quand même, par cohérence avec les
+		// autres approximations étiquetées du fichier.
+		const moneylineFound = findMoneyline(leagues, leg.team, leg.opponent, 0);
+		const total = findTotal(leagues, leg.team, leg.opponent, leg.side, leg.points, leg.period || 0);
+		if (!moneylineFound || !total) return null;
+		const parts = moneylineFound.participants || [];
+		const homePart = parts.find((p) => p.alignment === 'home') || parts[0];
+		const awayPart = parts.find((p) => p.alignment === 'away') || parts[1];
+		const designation = teamsMatch(homePart?.name, leg.team) ? 'home' : teamsMatch(awayPart?.name, leg.team) ? 'away' : null;
+		if (!designation) return null;
+		const priceEntry = moneylineFound.market.prices.find((p) => p.designation === designation);
+		if (!priceEntry) return null;
+		return { league: moneylineFound.league, decimal: americanToDecimal(priceEntry.price) * total.decimal, exact: false };
 	}
 	if (leg.type === 'margin') {
 		return findWinningMargin(leagues, leg.teamA, leg.teamB, leg.team, leg.margin, leg.period || 0);
@@ -2744,7 +2772,26 @@ async function resolveLeg(leg, leagueData) {
 		return findBttsAndTotal(leagues, leg.teamA, leg.teamB, leg.side, leg.points);
 	}
 	if (leg.type === 'winAndBtts') {
-		return findWinAndBtts(leagues, leg.teamA, leg.teamB, leg.team);
+		const direct = findWinAndBtts(leagues, leg.teamA, leg.teamB, leg.team);
+		if (direct) return direct;
+		// Pas de spécial "Both Teams To Score/Winner" pour ce match (vu en
+		// direct sur UEFA Women's Champions League : le seul spécial combiné
+		// disponible était "BTTS & Total", pas "BTTS & Winner") -- repli en
+		// approximation moneyline × BTTS, même caveat de corrélation que
+		// findWinAndTotal ci-dessus (le marché combiné existe généralement
+		// chez Pinnacle pour les grandes compétitions masculines, moins
+		// systématiquement en féminin, d'où ce repli).
+		const moneylineFound = findMoneyline(leagues, leg.teamA, leg.teamB, leg.period || 0);
+		const btts = findBtts(leagues, leg.teamA, leg.teamB, leg.period || 0);
+		if (!moneylineFound || !btts) return null;
+		const parts = moneylineFound.participants || [];
+		const homePart = parts.find((p) => p.alignment === 'home') || parts[0];
+		const awayPart = parts.find((p) => p.alignment === 'away') || parts[1];
+		const designation = teamsMatch(homePart?.name, leg.team) ? 'home' : teamsMatch(awayPart?.name, leg.team) ? 'away' : null;
+		if (!designation) return null;
+		const priceEntry = moneylineFound.market.prices.find((p) => p.designation === designation);
+		if (!priceEntry) return null;
+		return { league: moneylineFound.league, decimal: americanToDecimal(priceEntry.price) * btts.decimal, exact: false };
 	}
 	if (leg.type === 'firstScoreAndWin') {
 		return findFirstScoreAndWinApprox(leagues, leg.teamA, leg.teamB, leg.team, leg.period || 0);
@@ -5149,6 +5196,39 @@ export default {
 			const boost = { eventName, description, sport, league: null, newOdds, marketId: 'debug', maxStake: 20, kickoff: '', sportEmoji: '' };
 			const result = await formatMonitoringMessage(env, { type: 'add', boost });
 			return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-pinnacle-raw-specials') {
+			// Route de debug temporaire -- dump les participants "spéciaux" (nom
+			// contenant " & ") d'un match, pour voir si un marché combiné direct
+			// existe (et à quel seuil) sans deviner à l'aveugle.
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			const sport = url.searchParams.get('sport') || 'tennis';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&sport=tennis', { status: 400 });
+			const leagueList = await fetchLeagueList(sport);
+			let found = null;
+			const BATCH_SIZE = 20;
+			for (let i = 0; i < leagueList.length && !found; i += BATCH_SIZE) {
+				const batch = leagueList.slice(i, i + BATCH_SIZE);
+				const results = await Promise.all(
+					batch.map(async (league) => {
+						const leagueData = await fetchLeagueData(league.id);
+						if (!leagueData) return null;
+						const parent = findRootMatchup(leagueData.matchups, a, b);
+						if (!parent) return null;
+						const specials = [];
+						for (const m of leagueData.matchups) {
+							if (m.id !== parent.id && m.parentId !== parent.id) continue;
+							for (const p of m.participants || []) {
+								if (p.name?.includes(' & ')) specials.push({ matchupId: m.id, name: p.name });
+							}
+						}
+						return { league: league.name, specials };
+					})
+				);
+				found = results.find((r) => r?.specials?.length);
+			}
+			return new Response(JSON.stringify({ found }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/test-pinnacle') {
 			const a = url.searchParams.get('a');
