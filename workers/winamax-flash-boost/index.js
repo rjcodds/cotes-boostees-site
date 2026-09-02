@@ -1572,7 +1572,7 @@ function parseLegs(eventName, description, sportKey) {
 		const teamNames = multiWinsSet1Match[1].split(/,\s*|\s+et\s+/).map((s) => s.trim());
 		const oppNames = multiWinsSet1Match[2].split(/,\s*|\s+et\s+/).map((s) => s.trim());
 		if (teamNames.length >= 2 && teamNames.length === oppNames.length) {
-			return teamNames.map((team, i) => ({ type: 'winsSet1', teamA: team, teamB: oppNames[i], team, sport: sportKey }));
+			return teamNames.map((team, i) => ({ type: 'winsSet1', teamA: team, teamB: oppNames[i], team, period: 1, sport: sportKey }));
 		}
 	}
 
@@ -1875,11 +1875,14 @@ function parseLegs(eventName, description, sportKey) {
 	// contient cette même sous-chaîne mais désigne un marché DIFFÉRENT (voir
 	// winNotStraightSetsMatch plus bas, vérifié avant celui-ci -- bug réel
 	// trouvé en direct : sans cette exclusion, ce texte se faisait
-	// silencieusement absorber ici, perdant la condition de victoire).
+	// silencieusement absorber ici, perdant la condition de victoire). Bug
+	// réel trouvé sur une cote Diane Parry (tennis féminin) : "joueuses" (pas
+	// "joueurs") n'était pas dans l'alternation -- legs restait null, aucune
+	// source jamais tentée, alors que le marché existe bel et bien.
 	if (
 		!/respectivement/i.test(d) &&
 		!/vainqueur/i.test(d) &&
-		/(?:gagnent?\s+chacune?|les\s+(?:2|deux)\s+joueurs\s+gagnent)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)
+		/(?:gagnent?\s+chacune?|les\s+(?:2|deux)\s+(?:joueurs|joueuses)\s+gagnent)\s+(?:au\s+moins\s+)?(?:1|un)\s+set\b/i.test(d)
 	) {
 		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
 	}
@@ -2444,7 +2447,7 @@ function parseLegs(eventName, description, sportKey) {
 	// voir findOddsportalReference qui bascule automatiquement sur l'onglet
 	// "1st Set" quand period===1. Vraie cote Unibet vue sur C.Moutet.
 	const winsSet1ScoreMatch = d.match(
-		/^(.+?)\s+remporte\s+le\s+1(?:er|ere|ère)?\s+set\s+(?:sur\s+le\s+score\s+de\s+)?((?:\d+\s*[:-]\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*[:-]\s*\d+)\s*$/i
+		/^(.+?)\s+remporte\s+le\s+(?:1(?:er|ere|ère)?|premier)\s+set\s+(?:sur\s+le\s+score\s+de\s+)?((?:\d+\s*[:-]\s*\d+\s*(?:,\s*|\s+ou\s+))+\d+\s*[:-]\s*\d+)\s*$/i
 	);
 	if (winsSet1ScoreMatch) {
 		const cand = winsSet1ScoreMatch[1].trim();
@@ -2476,7 +2479,7 @@ function parseLegs(eventName, description, sportKey) {
 	// Résolu dynamiquement (pas de liste de scores fixe -- s'adapte au
 	// format best-of-3 ou best-of-5 selon ce que la page renvoie réellement),
 	// voir findOddsportalReference. Vraie cote Unibet vue sur G.Monfils.
-	const winNotStraightSetsMatch = d.match(/^(.+?)\s+vainqueur\s+et\s+les\s+(?:2|deux)\s+joueurs\s+gagnent\s+(?:un|1)\s+set\s*$/i);
+	const winNotStraightSetsMatch = d.match(/^(.+?)\s+vainqueur\s+et\s+les\s+(?:2|deux)\s+(?:joueurs|joueuses)\s+gagnent\s+(?:un|1)\s+set\s*$/i);
 	if (winNotStraightSetsMatch) {
 		const cand = winNotStraightSetsMatch[1].trim();
 		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
@@ -2576,15 +2579,18 @@ function parseLegs(eventName, description, sportKey) {
 	if (setScoreMatch) {
 		return [{ type: 'setScore', team: winningTeam, score: `${setScoreMatch[1]}-${setScoreMatch[2]}`, sport: sportKey }];
 	}
-	// "TeamX gagne le 1er set" (tennis, gagne SPÉCIFIQUEMENT le 1er set, sans
-	// score précisé -- différent de playerWinsASet qui vise "au moins un set"
-	// n'importe lequel) -- marché Piwi direct "Set 1 Winner" (participants =
-	// simples noms de joueurs comme un moneyline). Absent chez Matchbook
-	// (vérifié, aucun marché "Set 1" trouvé sur aucun match tennis en cours)
-	// et chez Pinnacle.
-	const winsSet1Match = winningTeam && d.match(/gagne\s+le\s+1(?:er|ere|ère)?\s+set\.?\s*$/i);
+	// "TeamX gagne le 1er/premier set" (tennis, gagne SPÉCIFIQUEMENT le 1er
+	// set, sans score précisé -- différent de playerWinsASet qui vise "au
+	// moins un set" n'importe lequel) -- marché Piwi direct "Set 1 Winner"
+	// (participants = simples noms de joueurs comme un moneyline). Absent
+	// chez Matchbook (vérifié, aucun marché "Set 1" trouvé sur aucun match
+	// tennis en cours) et chez Pinnacle. Bug réel trouvé sur une cote Diane
+	// Parry ("gagne le premier set", pas "1er set") : "premier" n'était pas
+	// dans l'alternation, legs restait null, ref jamais tentée sur AUCUNE
+	// source -- pas une histoire de données absentes, un vrai trou de parsing.
+	const winsSet1Match = winningTeam && d.match(/gagne\s+le\s+(?:1(?:er|ere|ère)?|premier)\s+set\.?\s*$/i);
 	if (winsSet1Match) {
-		return [{ type: 'winsSet1', team: winningTeam, sport: sportKey }];
+		return [{ type: 'winsSet1', team: winningTeam, teamA, teamB, period: 1, sport: sportKey }];
 	}
 	// "TeamX gagne sans encaisser de but" -- marché spécial dédié "Team To Win
 	// to Nil?" (Yes/No), variante 1ère mi-temps si précisé.
@@ -4985,6 +4991,35 @@ async function findOddsportalReference(env, leg, teamA, teamB) {
 			const [a, b] = row.score.split(':').map((n) => parseInt(n, 10));
 			const playerSets = idx === 0 ? a : b;
 			if (playerSets === 0) continue; // blanchissage subi -- exclu
+			probSum += 1 / row.decimal;
+			minCount = Math.min(minCount, row.count);
+			found++;
+		}
+		if (!found) return null;
+		return { decimal: 1 / probSum, bookmakerCount: minCount, exact: true };
+	}
+	if (leg.type === 'winsSet1') {
+		// "{Joueur} gagne le 1er/premier set" -- period:1 fait déjà basculer
+		// periodTab sur "1st Set" (score en JEUX du 1er set, pas en sets du
+		// match). Somme toutes les lignes où le score du joueur > celui de
+		// l'adversaire -- pas d'exclusion de blanchissage à faire ici
+		// (6-0 compte comme une victoire du 1er set comme n'importe quel autre
+		// score). Absent chez Pinnacle/Matchbook et Piwi souvent indisponible
+		// (ID compétition tennis périmé) -- vu sur une cote Diane Parry où
+		// aucune des 3 autres sources ne couvrait ce marché du tout.
+		const idx = designationFor(leg.team);
+		if (idx == null) return null;
+		const bodyText = await fetchOddsportalBodyText(env, match.url, ['Correct Score'], periodTab);
+		if (!bodyText) return null;
+		const rows = parseOddsportalScoreLines(bodyText);
+		if (!rows.length) return null;
+		let probSum = 0;
+		let minCount = Infinity;
+		let found = 0;
+		for (const row of rows) {
+			const [a, b] = row.score.split(':').map((n) => parseInt(n, 10));
+			const [teamScore, oppScore] = idx === 0 ? [a, b] : [b, a];
+			if (teamScore <= oppScore) continue;
 			probSum += 1 / row.decimal;
 			minCount = Math.min(minCount, row.count);
 			found++;
