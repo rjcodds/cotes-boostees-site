@@ -119,6 +119,7 @@ function parseBoosts(state) {
 	if (!state || !state.matches) return boosts;
 
 	for (const match of Object.values(state.matches)) {
+		if (!match) continue;
 		const bet = state.bets?.[String(match.mainBetId)];
 		if (!bet) continue;
 
