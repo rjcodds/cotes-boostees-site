@@ -1390,7 +1390,6 @@ function findBothWinASet(leagues, teamA, teamB, points = 2.5) {
 					(teamsMatch(m.participants[0]?.name, teamB) && teamsMatch(m.participants[1]?.name, teamA)))
 		);
 		if (!matchup) continue;
-		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0);
 		// points doit correspondre EXACTEMENT à la ligne demandée -- pas de
 		// repli sur une autre ligne : "plus de 3,5 sets" (best-of-5, ligne
 		// Pinnacle réelle 4.5) n'est pas la même chose que "plus de 2,5 sets"
@@ -1399,7 +1398,15 @@ function findBothWinASet(leagues, teamA, teamB, points = 2.5) {
 		// (Grand Chelem, best-of-5) : l'ancienne version ignorait le seuil
 		// demandé et vérifiait toujours contre 2.5, ratant silencieusement
 		// tout best-of-5 (jamais de ligne 2.5 chez Pinnacle pour ces matchs).
-		if (!market || market.prices?.[0]?.points !== points) continue;
+		// Deuxième bug réel trouvé sur Berrettini (best-of-5, "plus de 4,5
+		// sets") : Pinnacle expose la ligne principale (3.5) et l'alternative
+		// (4.5) comme DEUX objets marché séparés pour le même matchup -- le
+		// filtre "points === points" doit porter sur le CHOIX du marché
+		// (chercher celui qui a le bon points), pas être vérifié après coup
+		// sur le premier marché trouvé au hasard (qui grappait toujours la
+		// ligne principale 3.5, jamais l'alternative demandée).
+		const market = markets.find((mk) => mk.matchupId === matchup.id && mk.type === 'total' && mk.period === 0 && mk.prices?.[0]?.points === points);
+		if (!market) continue;
 		const p = market.prices.find((pr) => pr.designation === 'over');
 		if (!p) continue;
 		return { league: league.name, decimal: americanToDecimal(p.price), exact: true };
@@ -1906,11 +1913,16 @@ function parseLegs(eventName, description, sportKey) {
 	// matchs suivants" -- sinon combo déjà géré plus haut) -- formulation
 	// alternative de la même condition ("le match va au 3e set") que le
 	// marché ci-dessus, vue telle quelle sur Winamax. Réutilise bothWinASet,
-	// qui refuse déjà silencieusement si le match n'est pas best-of-3 (ligne
-	// Pinnacle != 2.5).
+	// qui refuse déjà silencieusement si le seuil ne correspond à aucune
+	// ligne Pinnacle réelle. Seuil non figé à 2.5 : "plus de 4,5 sets" est le
+	// même marché pour un best-of-5 (ATP Grand Slam messieurs) -- bug réel
+	// trouvé sur une cote Berrettini (best-of-5) où le gate figé à ===2.5
+	// rejetait le texte AVANT même d'essayer de construire la leg, alors que
+	// findBothWinASet accepte déjà n'importe quel seuil depuis la correction
+	// équivalente sur multiSetsMatch (combo multi-matchs).
 	const totalSetsMatch = d.match(/plus\s+de\s+(\d+(?:[.,]\d+)?)\s*sets?\s+(?:lors\s+du\s+match|dans\s+le\s+match)?\.?\s*$/i);
-	if (totalSetsMatch && parseFloat(totalSetsMatch[1].replace(',', '.')) === 2.5) {
-		return [{ type: 'bothWinASet', teamA, teamB, sport: sportKey }];
+	if (totalSetsMatch) {
+		return [{ type: 'bothWinASet', teamA, teamB, points: parseFloat(totalSetsMatch[1].replace(',', '.')), sport: sportKey }];
 	}
 
 	// "{Joueur} remporte/gagne au moins 1 set" (tennis, UN SEUL joueur) --
