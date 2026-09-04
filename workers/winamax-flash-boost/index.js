@@ -3308,6 +3308,19 @@ async function fetchPreloadedState(env) {
 			if (hasMatches) break;
 			await new Promise((r) => setTimeout(r, 500));
 		}
+		// Deuxième sonde : Winamax réserve parfois la clé d'un match AVANT que
+		// Socket.IO ne pousse son contenu réel (state.matches[id] vaut null le
+		// temps que ça arrive) -- une nouvelle GCB qui vient d'apparaître est
+		// justement le cas le plus probable de tomber pile sur cette fenêtre.
+		// Sans cette attente, la clé null atteint parseBoosts (ignorée
+		// silencieusement depuis le correctif anti-crash) et la GCB toute
+		// fraîche n'est tout simplement jamais vue ce cycle-ci. Encore borné
+		// (3s max) pour ne pas gonfler le coût Browser Rendering du cas normal.
+		for (let i = 0; i < 6; i++) {
+			const hasNull = await page.evaluate(() => Object.values(window.PRELOADED_STATE?.matches || {}).some((m) => !m));
+			if (!hasNull) break;
+			await new Promise((r) => setTimeout(r, 500));
+		}
 		return await page.evaluate(() => window.PRELOADED_STATE || null);
 	} finally {
 		await browser.close();
@@ -5297,6 +5310,15 @@ export default {
 			if (!marketId || !eventId) return new Response('usage: ?marketId=X&eventId=Y', { status: 400 });
 			const result = await fetchPiwiMarketPrices(marketId, eventId);
 			return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/test-piwi-raw-markets') {
+			const a = url.searchParams.get('a');
+			const b = url.searchParams.get('b');
+			const sport = url.searchParams.get('sport') || 'football';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&sport=football', { status: 400 });
+			const piwiEvent = await findPiwiEvent(a, b, sport);
+			if (!piwiEvent) return new Response(JSON.stringify({ error: 'event not found' }), { headers: { 'Content-Type': 'application/json' } });
+			return new Response(JSON.stringify({ eventId: piwiEvent.eventId, markets: piwiEvent.markets }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/test-piwi-teams') {
 			const a = url.searchParams.get('a');
