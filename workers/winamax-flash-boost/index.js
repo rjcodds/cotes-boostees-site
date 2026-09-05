@@ -149,13 +149,24 @@ function parseBoosts(state) {
 		// perdre une tentative de correspondance par nom à findPinnacleReference.
 		const rawTournamentName = state.tournaments?.[String(match.tournamentId)]?.tournamentName || null;
 		const tournamentName = rawTournamentName && !/tous les paris/i.test(rawTournamentName) ? rawTournamentName : null;
+		// Pour les combos "schedule" (chacun des N matchs...), Winamax met déjà
+		// le nom de la compétition dans le TITRE du match (pas de paire
+		// d'équipes, pas de "TeamA - TeamB") -- state.tournaments pointe souvent
+		// vers "Tous les paris" pour ces boosts-là (cf. commentaire ci-dessus),
+		// donc league restait null même quand l'info existait juste à côté.
+		// Bug réel trouvé sur une cote K-League 1 : eventName="K-League 1",
+		// league=null, aucun indice pays/championnat pour matchLeaguesByLabel,
+		// ligne de référence jamais tentée. splitTeams() sert de garde-fou :
+		// si eventName ressemble à une vraie paire d'équipes, ne pas le
+		// réutiliser comme libellé de championnat.
+		const league = tournamentName || (!splitTeams(eventName) ? eventName || null : null);
 
 		boosts.push({
 			marketId: String(bet.betId),
 			eventName,
 			sportEmoji,
 			sport: sportFromCategory || SPORT_KEY_BY_EMOJI[sportEmoji] || null,
-			league: tournamentName,
+			league,
 			description: outcome.label,
 			oldOdds: formatOdd(oldOdd),
 			newOdds: formatOdd(newOdd),
