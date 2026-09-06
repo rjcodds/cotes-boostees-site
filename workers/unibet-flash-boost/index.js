@@ -2340,6 +2340,32 @@ function parseLegs(eventName, description, sportKey) {
 		}
 	}
 
+	// "TeamX marque au moins N buts" -- même marché team_total que
+	// teamTotalMatch ci-dessus ("plus de N,5 buts"), juste une formulation
+	// différente avec un entier au lieu d'une ligne décimale ("au moins 4"
+	// équivaut à "plus de 3,5"). Jamais câblée en tant que telle -- bug réel
+	// trouvé sur une cote FC Barcelone ("marque au moins 4 buts"), legs
+	// restait null, aucune source jamais tentée.
+	const teamTotalAtLeastMatch = d.match(/^(.+?)\s+marque\s+au\s+moins\s+(\d+)\s*buts?\.?\s*$/i);
+	if (teamTotalAtLeastMatch) {
+		const cand = teamTotalAtLeastMatch[1].trim();
+		const team = isExactlyTeamName(teamA, cand) ? teamA : isExactlyTeamName(teamB, cand) ? teamB : null;
+		if (team) {
+			return [
+				{
+					type: 'teamTotal',
+					team,
+					teamA,
+					teamB,
+					side: 'over',
+					points: parseInt(teamTotalAtLeastMatch[2], 10) - 0.5,
+					period: isFirstHalf ? 1 : 0,
+					sport: sportKey,
+				},
+			];
+		}
+	}
+
 	// "Plus/moins de N cartons (dans le match)" -- marché Piwi direct "Cards
 	// Over/Under N" (aucun équivalent Pinnacle trouvé pour ce marché).
 	const cardsTotalMatch = d.match(/(plus|moins)\s+de\s+(\d+(?:[.,]\d+)?)\s*cartons?\b/i);
