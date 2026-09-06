@@ -5195,7 +5195,21 @@ function formatOddsportalReference(ref) {
 }
 
 async function checkAndPost(env) {
-	const state = await fetchPreloadedState(env);
+	// Retry une fois sur échec du navigateur (Browser Rendering partagé,
+	// erreurs vues régulièrement en prod : "Unable to create new browser",
+	// "Unable to connect to existing session", "Navigating frame was
+	// detached", "Target closed", timeout) -- sans retry, TOUT le cycle de 5
+	// min est sauté (aucune détection, aucun post sur AUCUN canal), et une
+	// GCB dont la fenêtre de vie est courte peut être ratée entièrement.
+	// Coût quasi nul : ce chemin n'est emprunté que sur échec, rare.
+	let state;
+	try {
+		state = await fetchPreloadedState(env);
+	} catch (e) {
+		console.log('checkAndPost: fetchPreloadedState failed, retrying once:', String(e));
+		await new Promise((r) => setTimeout(r, 2000));
+		state = await fetchPreloadedState(env);
+	}
 	const boosts = parseBoosts(state);
 	const eligible = boosts.filter((b) => b.maxStake <= MAX_STAKE_EUR);
 

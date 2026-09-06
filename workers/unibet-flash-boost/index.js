@@ -5095,14 +5095,26 @@ function formatOddsportalReference(ref) {
 }
 
 async function checkAndPost(env) {
-	const res = await fetch(UNIBET_URL, {
-		headers: {
-			'User-Agent':
-				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-		},
-	});
+	const fetchUnibet = () =>
+		fetch(UNIBET_URL, {
+			headers: {
+				'User-Agent':
+					'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			},
+		});
+	// Retry une fois sur échec réseau/HTTP -- sans ça, le cycle entier (1 min)
+	// est perdu en silence : ni loggé dans /errors (juste un console.log
+	// éphémère, invisible en dehors de `wrangler tail`), ni retenté avant la
+	// minute suivante. Coût quasi nul (chemin emprunté seulement sur échec).
+	let res = await fetchUnibet();
+	if (!res.ok) {
+		console.log(`Unibet fetch failed (${res.status}), retrying once`);
+		await new Promise((r) => setTimeout(r, 1500));
+		res = await fetchUnibet();
+	}
 	if (!res.ok) {
 		console.log(`Unibet fetch failed: ${res.status}`);
+		await logError(env, 'checkAndPost:fetch', `HTTP ${res.status}`);
 		return { checked: 0, posted: 0 };
 	}
 	const html = await res.text();
