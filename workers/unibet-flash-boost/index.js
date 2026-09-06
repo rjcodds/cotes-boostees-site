@@ -450,6 +450,18 @@ function teamsMatch(a, b) {
 // tout type de leg (pas seulement le nouveau) échouait silencieusement dès
 // qu'un match passait en direct, `!m.parentId` ne matchant plus rien.
 function isRootMatchup(m) {
+	// Exclusion prioritaire : les sous-marchés "(Bookings)"/"(Corners)" (cartons,
+	// corners) partagent EXACTEMENT les noms des deux équipes (juste un suffixe
+	// entre parenthèses) et peuvent avoir `periods[].hasMoneyline: true` malgré
+	// eux côté Pinnacle -- sans cette exclusion, matchups.find() peut les
+	// choisir comme "racine" au lieu du vrai match si ils apparaissent avant
+	// dans le tableau. Bug réel trouvé sur un combo "Winning Margin" Everton-
+	// Manchester United : findRootMatchup retournait le sous-marché
+	// "(Bookings)" (teamsMatch fuzzy-matche "Everton (Bookings)" contre
+	// "Everton" sans souci), aucun des marchés du vrai match n'était jamais
+	// trouvé en dessous. Même famille de bug que l'exclusion déjà appliquée à
+	// findScheduledMatchups.
+	if ((m.participants || []).some((p) => /\s\([A-Za-zÀ-ÿ]+\)\s*$/.test(p.name || ''))) return false;
 	return !m.parentId || Boolean(m.periods?.some((p) => p.hasMoneyline));
 }
 
@@ -2689,6 +2701,16 @@ function parseLegs(eventName, description, sportKey) {
 				sport: sportKey,
 			},
 		];
+	}
+	// "TeamX gagne la 1ère/première mi-temps" -- moneyline classique mais
+	// period 1, jamais câblé en tant que tel (seuls les combos plus complexes
+	// "gagne les deux mi-temps"/"mène et gagne" utilisaient isFirstHalf).
+	// Vérifié AVANT isPlainWin ci-dessous pour ne pas se faire absorber par le
+	// refus volontaire de ce dernier ("gagne" seul, rien d'autre après).
+	const winsFirstHalfMatch =
+		winningTeam && /^[A-ZÀ-Ý][\w .'-]*?\s+gagne\s+(?:la\s+)?(?:1(?:ere|ère)?|premiere|première)\s+mi-?temps\s*[.!]?\s*$/i.test(d.trim());
+	if (winsFirstHalfMatch) {
+		return [{ type: 'moneyline', teamA, teamB, team: winningTeam, period: 1, sport: sportKey }];
 	}
 	// "TeamX gagne" ou "TeamX gagne le match", et RIEN d'autre après -- sinon
 	// c'est un marché différent ("gagne les deux mi-temps" par ex.) qui ne doit

@@ -401,6 +401,18 @@ function teamsMatch(a, b) {
 // tout type de leg (pas seulement le nouveau) échouait silencieusement dès
 // qu'un match passait en direct, `!m.parentId` ne matchant plus rien.
 function isRootMatchup(m) {
+	// Exclusion prioritaire : les sous-marchés "(Bookings)"/"(Corners)" (cartons,
+	// corners) partagent EXACTEMENT les noms des deux équipes (juste un suffixe
+	// entre parenthèses) et peuvent avoir `periods[].hasMoneyline: true` malgré
+	// eux côté Pinnacle -- sans cette exclusion, matchups.find() peut les
+	// choisir comme "racine" au lieu du vrai match si ils apparaissent avant
+	// dans le tableau. Bug réel trouvé sur un combo "Winning Margin" Everton-
+	// Manchester United : findRootMatchup retournait le sous-marché
+	// "(Bookings)" (teamsMatch fuzzy-matche "Everton (Bookings)" contre
+	// "Everton" sans souci), aucun des marchés du vrai match n'était jamais
+	// trouvé en dessous. Même famille de bug que l'exclusion déjà appliquée à
+	// findScheduledMatchups.
+	if ((m.participants || []).some((p) => /\s\([A-Za-zÀ-ÿ]+\)\s*$/.test(p.name || ''))) return false;
 	return !m.parentId || Boolean(m.periods?.some((p) => p.hasMoneyline));
 }
 
@@ -2652,6 +2664,16 @@ function parseLegs(eventName, description, sportKey) {
 				sport: sportKey,
 			},
 		];
+	}
+	// "TeamX gagne la 1ère/première mi-temps" -- moneyline classique mais
+	// period 1, jamais câblé en tant que tel (seuls les combos plus complexes
+	// "gagne les deux mi-temps"/"mène et gagne" utilisaient isFirstHalf).
+	// Vérifié AVANT isPlainWin ci-dessous pour ne pas se faire absorber par le
+	// refus volontaire de ce dernier ("gagne" seul, rien d'autre après).
+	const winsFirstHalfMatch =
+		winningTeam && /^[A-ZÀ-Ý][\w .'-]*?\s+gagne\s+(?:la\s+)?(?:1(?:ere|ère)?|premiere|première)\s+mi-?temps\s*[.!]?\s*$/i.test(d.trim());
+	if (winsFirstHalfMatch) {
+		return [{ type: 'moneyline', teamA, teamB, team: winningTeam, period: 1, sport: sportKey }];
 	}
 	// "TeamX gagne" ou "TeamX gagne le match", et RIEN d'autre après -- sinon
 	// c'est un marché différent ("gagne les deux mi-temps" par ex.) qui ne doit
@@ -5260,13 +5282,17 @@ export default {
 			return new Response(JSON.stringify(result, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/test-pinnacle-raw-specials') {
-			// Route de debug temporaire -- dump les participants "spéciaux" (nom
-			// contenant " & ") d'un match, pour voir si un marché combiné direct
-			// existe (et à quel seuil) sans deviner à l'aveugle.
+			// Dump tous les marchés "spéciaux" (special.description) d'un match,
+			// et leurs participants -- pour voir si un marché existe (sous quel
+			// nom/seuil exact) sans deviner à l'aveugle. ?filter=amp limite aux
+			// participants contenant " & " (combos directs type winAndTotal) ;
+			// sans filtre, liste TOUTES les special.description trouvées (utile
+			// pour "Winning Margin" et autres specials par équipe).
 			const a = url.searchParams.get('a');
 			const b = url.searchParams.get('b');
 			const sport = url.searchParams.get('sport') || 'tennis';
-			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&sport=tennis', { status: 400 });
+			const filterAmp = url.searchParams.get('filter') === 'amp';
+			if (!a || !b) return new Response('usage: ?a=TeamA&b=TeamB&sport=tennis&filter=amp(optionnel)', { status: 400 });
 			const leagueList = await fetchLeagueList(sport);
 			let found = null;
 			const BATCH_SIZE = 20;
@@ -5281,14 +5307,30 @@ export default {
 						const specials = [];
 						for (const m of leagueData.matchups) {
 							if (m.id !== parent.id && m.parentId !== parent.id) continue;
+							const description = m.special?.description || null;
 							for (const p of m.participants || []) {
-								if (p.name?.includes(' & ')) specials.push({ matchupId: m.id, name: p.name });
+								if (filterAmp && !p.name?.includes(' & ')) continue;
+								specials.push({ matchupId: m.id, description, name: p.name });
 							}
 						}
-						return { league: league.name, specials };
+						// Dump aussi TOUS les matchups de la ligue qui mentionnent l'une des
+						// deux équipes, sans filtrer par parentId -- pour vérifier que
+						// findRootMatchup a bien pris le VRAI match comme parent (pas un
+						// sous-matchup comme les cartons, qui partagent parfois les mêmes
+						// noms d'équipes -- bug déjà rencontré côté isRootMatchup).
+						const allRelated = leagueData.matchups
+							.filter((m) => (m.participants || []).some((p) => teamsMatch(p.name, a) || teamsMatch(p.name, b)))
+							.map((m) => ({
+								id: m.id,
+								parentId: m.parentId || null,
+								isRoot: isRootMatchup(m),
+								specialDescription: m.special?.description || null,
+								participants: (m.participants || []).map((p) => p.name),
+							}));
+						return { league: league.name, parentId: parent.id, specials, allRelated };
 					})
 				);
-				found = results.find((r) => r?.specials?.length);
+				found = results.find((r) => r?.specials?.length) || results.find((r) => r);
 			}
 			return new Response(JSON.stringify({ found }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
