@@ -3129,23 +3129,50 @@ function formatPinnacleReference(ref, boostDecimal) {
 // Suivi perso (usage interne) : compare l'instantané précédent au nouveau et
 // notifie chaque ajout / suppression / variation de cote sur un canal Telegram
 // dédié -- distinct du canal abonnés, jamais le même volume.
+// eventName+description identifient la promo elle-même côté utilisatrice --
+// Winamax réémet parfois un nouveau betId pour EXACTEMENT la même cote
+// (mêmes équipes, même marché, parfois même prix) sans rien changer d'autre
+// visible. Sert de repli dans diffBoosts pour ne pas republier "Nouvelle
+// cote" à chaque rotation d'ID.
+function boostContentKey(b) {
+	return `${b.eventName}::${b.description}`;
+}
+
 function diffBoosts(prevBoosts, currentBoosts) {
 	const prevByMarket = new Map(prevBoosts.map((b) => [b.marketId, b]));
 	const currentByMarket = new Map(currentBoosts.map((b) => [b.marketId, b]));
+	const prevByContent = new Map(prevBoosts.map((b) => [boostContentKey(b), b]));
 	const events = [];
+	// Bug réel confirmé via le digest quotidien : la même cote (même texte
+	// exact) repostée en "Nouvelle cote" sous 2 marketId différents le même
+	// jour (Sabalenka-Townsend, "remporte au moins un set") -- jusqu'à 3-4
+	// fois en quelques heures vu par l'utilisatrice. Le marketId seul n'est
+	// pas un identifiant stable pour cette promo côté Winamax. Repli par
+	// contenu : si le marketId est inconnu mais qu'une cote au texte
+	// identique existait déjà, ce n'est pas une nouveauté -- au pire une
+	// évolution de cote (si le prix a changé), jamais un nouveau "add".
+	const migratedMarketIds = new Set();
 
 	for (const [marketId, b] of currentByMarket) {
 		const prevB = prevByMarket.get(marketId);
-		if (!prevB) {
-			events.push({ type: 'add', boost: b });
-		} else if (prevB.newOdds !== b.newOdds) {
-			events.push({ type: 'change', boost: b, prevOdds: prevB.newOdds });
+		if (prevB) {
+			if (prevB.newOdds !== b.newOdds) events.push({ type: 'change', boost: b, prevOdds: prevB.newOdds });
+			continue;
 		}
+		const prevByContentMatch = prevByContent.get(boostContentKey(b));
+		if (prevByContentMatch) {
+			migratedMarketIds.add(prevByContentMatch.marketId);
+			if (prevByContentMatch.newOdds !== b.newOdds) {
+				events.push({ type: 'change', boost: b, prevOdds: prevByContentMatch.newOdds });
+			}
+			continue;
+		}
+		events.push({ type: 'add', boost: b });
 	}
 	for (const [marketId, b] of prevByMarket) {
-		if (!currentByMarket.has(marketId)) {
-			events.push({ type: 'remove', boost: b });
-		}
+		if (currentByMarket.has(marketId)) continue;
+		if (migratedMarketIds.has(marketId)) continue; // pas vraiment retirée, juste un nouvel ID
+		events.push({ type: 'remove', boost: b });
 	}
 	return events;
 }
@@ -5233,7 +5260,11 @@ async function checkAndPost(env) {
 
 	let posted = 0;
 	for (const boost of eligible) {
-		const key = `seen:${boost.marketId}:${boost.newOdds}`;
+		// Clé par CONTENU (équipes+marché), pas par marketId -- même bug que
+		// diffBoosts ci-dessus (Winamax réémet parfois un nouveau marketId pour
+		// la même promo) : sans ça, une rotation d'ID republierait aussi la
+		// même flash sur le canal abonnés, pas seulement sur le canal spawn.
+		const key = `seen:${boostContentKey(boost)}:${boost.newOdds}`;
 		const already = await env.SEEN_BOOSTS.get(key);
 		if (already) continue;
 

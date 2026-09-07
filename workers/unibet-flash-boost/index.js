@@ -3166,23 +3166,42 @@ function formatPinnacleReference(ref, boostDecimal) {
 // Suivi perso (usage interne) : compare l'instantané précédent au nouveau et
 // notifie chaque ajout / suppression / variation de cote sur un canal Telegram
 // dédié -- distinct du canal abonnés, jamais le même volume.
+// eventName+description identifient la promo elle-même côté utilisatrice --
+// sert de repli dans diffBoosts pour ne pas republier "Nouvelle cote" si le
+// marketId change pour une cote par ailleurs identique (vu côté Winamax,
+// pas encore confirmé côté Unibet, mais même risque structurel -- fix
+// appliqué en lockstep par prudence).
+function boostContentKey(b) {
+	return `${b.eventName}::${b.description}`;
+}
+
 function diffBoosts(prevBoosts, currentBoosts) {
 	const prevByMarket = new Map(prevBoosts.map((b) => [b.marketId, b]));
 	const currentByMarket = new Map(currentBoosts.map((b) => [b.marketId, b]));
+	const prevByContent = new Map(prevBoosts.map((b) => [boostContentKey(b), b]));
 	const events = [];
+	const migratedMarketIds = new Set();
 
 	for (const [marketId, b] of currentByMarket) {
 		const prevB = prevByMarket.get(marketId);
-		if (!prevB) {
-			events.push({ type: 'add', boost: b });
-		} else if (prevB.newOdds !== b.newOdds) {
-			events.push({ type: 'change', boost: b, prevOdds: prevB.newOdds });
+		if (prevB) {
+			if (prevB.newOdds !== b.newOdds) events.push({ type: 'change', boost: b, prevOdds: prevB.newOdds });
+			continue;
 		}
+		const prevByContentMatch = prevByContent.get(boostContentKey(b));
+		if (prevByContentMatch) {
+			migratedMarketIds.add(prevByContentMatch.marketId);
+			if (prevByContentMatch.newOdds !== b.newOdds) {
+				events.push({ type: 'change', boost: b, prevOdds: prevByContentMatch.newOdds });
+			}
+			continue;
+		}
+		events.push({ type: 'add', boost: b });
 	}
 	for (const [marketId, b] of prevByMarket) {
-		if (!currentByMarket.has(marketId)) {
-			events.push({ type: 'remove', boost: b });
-		}
+		if (currentByMarket.has(marketId)) continue;
+		if (migratedMarketIds.has(marketId)) continue; // pas vraiment retirée, juste un nouvel ID
+		events.push({ type: 'remove', boost: b });
 	}
 	return events;
 }
@@ -5141,7 +5160,9 @@ async function checkAndPost(env) {
 
 	let posted = 0;
 	for (const boost of eligible) {
-		const key = `seen:${boost.marketId}:${boost.newOdds}`;
+		// Clé par CONTENU (équipes+marché), pas par marketId -- même repli que
+		// diffBoosts ci-dessus, par prudence (voir commentaire boostContentKey).
+		const key = `seen:${boostContentKey(boost)}:${boost.newOdds}`;
 		const already = await env.SEEN_BOOSTS.get(key);
 		if (already) continue;
 
