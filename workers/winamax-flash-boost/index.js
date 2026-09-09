@@ -3312,8 +3312,21 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 				await env.SEEN_BOOSTS.delete(`pintrack:${event.boost.marketId}`);
 				continue;
 			}
+			// Garde-fou anti-doublon indépendant du diff lui-même : si deux
+			// exécutions de checkAndPost se chevauchent (tick de cron qui
+			// traîne + /run manuel, ou deux tocks de cron qui se recouvrent),
+			// les deux peuvent lire le même prevBoosts (aucune n'a encore
+			// écrit le nouveau snapshot) et calculer le MÊME événement "add"
+			// -- sans garde, les deux postent le même message sur le canal
+			// spawn. Bug réel signalé par l'utilisatrice ("encore des
+			// doublons"), distinct de la rotation de marketId déjà corrigée
+			// dans diffBoosts (celle-là empêche un FAUX doublon de contenu,
+			// pas un vrai double-post du même événement).
+			const spawnGuardKey = `spawnposted:${event.type}:${boostContentKey(event.boost)}:${event.boost.newOdds}`;
+			if (await env.SEEN_BOOSTS.get(spawnGuardKey)) continue;
 			const { text, refLine, edge } = await formatMonitoringMessage(env, event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
+			await env.SEEN_BOOSTS.put(spawnGuardKey, '1', { expirationTtl: SEEN_TTL_SECONDS });
 
 			if (event.type === 'add') {
 				if (refLine && sent?.message_id) {
