@@ -456,7 +456,14 @@ async function logDigestItem(env, boost, edge) {
 	const key = `digestitem:${todayKey()}:${boost.marketId}`;
 	await env.SEEN_BOOSTS.put(
 		key,
-		JSON.stringify({ eventName: boost.eventName, description: boost.description, newOdds: boost.newOdds, edge }),
+		JSON.stringify({
+			eventName: boost.eventName,
+			description: boost.description,
+			newOdds: boost.newOdds,
+			edge,
+			kickoff: boost.kickoff || null,
+			maxStake: boost.maxStake ?? null,
+		}),
 		{ expirationTtl: 2 * 24 * 60 * 60 }
 	);
 }
@@ -5294,28 +5301,13 @@ async function checkAndPost(env) {
 		} catch (e) {
 			console.log('checkAndPost: sendTelegramMessage failed for', boost.marketId, ':', String(e));
 			await logError(env, 'checkAndPost:send', `${boost.marketId}: ${String(e)}`);
-			continue; // pas de log bet-analytix si le post Telegram lui-même a échoué
-		}
-		// Log bet-analytix (bilan perso) -- toujours en meilleur effort, ne doit
-		// JAMAIS faire échouer/retarder le post Telegram qui vient de réussir.
-		try {
-			await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					eventName: boost.eventName,
-					description: boost.description,
-					odds: boost.newOdds,
-					stake: boost.maxStake,
-					bookmaker: 'winamax',
-					sport: boost.sport,
-				}),
-			});
-		} catch (e) {
-			console.log('checkAndPost: bet-analytix log failed for', boost.marketId, ':', String(e));
-			await logError(env, 'checkAndPost:bax', `${boost.marketId}: ${String(e)}`);
 		}
 	}
+	// Pas d'appel direct à bet-analytix-sync ici -- le webhook Telegram
+	// (/telegram-webhook, côté unibet-flash-boost) écoute déjà le canal
+	// payant en temps réel et logge TOUT ce qui y est posté, qu'il vienne
+	// d'ici ou d'un post manuel de l'utilisatrice. Un appel direct en plus
+	// aurait doublé chaque flash automatique dans le bilan.
 	return { checked: boosts.length, eligible: eligible.length, posted };
 }
 

@@ -26,3 +26,11 @@ binding = "BROWSER"
 [[services]]
 binding = "BAX_WORKER"
 service = "bet-analytix-sync"
+
+# Idem -- utilisé par /telegram-webhook pour recouper les posts manuels
+# (image + légende, sans event/marché/cote lisibles) avec le digest du jour
+# de winamax-flash-boost via /digest-list-debug (recoupement sur l'heure de
+# dispo). Voir parseManualImagePostForBax / findWinamaxDigestMatch.
+[[services]]
+binding = "WINAMAX_WORKER"
+service = "winamax-flash-boost"

@@ -70,6 +70,137 @@ function stripCbPrefix(label) {
 	return (label || '').replace(/^Cotes Boost[ée]es\s*/i, '').trim();
 }
 
+// Parse un message texte du canal payant (peu importe qui l'a posté --
+// automatique Winamax/Unibet ou manuel Betclic/GCB) en payload pour
+// bet-analytix-sync. Repose sur la structure commune à tous nos messages
+// ("Cote : X → Y", "Mise max : X€") plutôt que sur un format rigide par
+// bookmaker -- volontaire, pour rester robuste aux légers écarts d'un post
+// manuel. Renvoie null si le texte n'a pas la forme attendue (ex: un
+// message qui ne serait pas une cote boostée du tout).
+const BOOKMAKER_KEYWORDS = [
+	['winamax', 'winamax'],
+	['unibet', 'unibet'],
+	['betclic', 'betclic'],
+	['bet365', 'bet365'],
+	['bet 365', 'bet365'],
+];
+// Mots-clés spécifiques à un sport dans le TEXTE LIBRE d'une cote (pas les
+// mêmes que SPORT_EMOJI plus haut, qui matche des noms de compétition/ligue
+// structurés) -- "but(s)" est volontairement absent : trop générique
+// (apparaît aussi dans des tournures neutres), le football reste le repli
+// par défaut si rien d'autre ne matche, de très loin le sport le plus
+// fréquent dans nos cotes.
+const SPORT_TEXT_KEYWORDS = [
+	['set', 'tennis'],
+	['jeux', 'tennis'],
+	['run', 'baseball'],
+	['essai', 'rugby'],
+	['panier', 'basketball'],
+	['smash', 'volleyball'],
+	['carton', 'football'],
+];
+function parseChannelPostForBax(text) {
+	const lines = text
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+	if (!lines.length) return null;
+
+	const oddsLine = lines.find((l) => /^Cote\s*:/i.test(l));
+	const oddsMatch = oddsLine?.match(/→\s*([\d.,]+)/);
+	if (!oddsMatch) return null; // pas une cote boostée reconnaissable
+
+	const stakeLine = lines.find((l) => /Mise max\s*:/i.test(l));
+	const stakeMatch = stakeLine?.match(/Mise max\s*:\s*([\d.,]+)\s*€/i);
+	if (!stakeMatch) return null;
+
+	const lowerFull = text.toLowerCase();
+	const bookmaker = BOOKMAKER_KEYWORDS.find(([kw]) => lowerFull.includes(kw))?.[1] || null;
+	if (!bookmaker) return null; // impossible d'attribuer le pari à un bookmaker
+
+	// eventName/description : lignes "de contenu" restantes, dans l'ordre --
+	// tout ce qui n'est ni l'en-tête (contient toujours "—"), ni les lignes
+	// structurelles (Cote/Mise/note de bas de page/disponibilité).
+	const contentLines = lines.filter(
+		(l) =>
+			!/—/.test(l) &&
+			!/^Cote\s*:/i.test(l) &&
+			!/Mise max\s*:/i.test(l) &&
+			!/^\*/.test(l) &&
+			!/^Disponible jusqu.à/i.test(l)
+	);
+	const eventName = contentLines[0] || null;
+	const description = contentLines[1] || null;
+	if (!eventName || !description) return null;
+
+	const sportMatch = SPORT_TEXT_KEYWORDS.find(([kw]) => lowerFull.includes(kw));
+	const sport = sportMatch ? sportMatch[1] : 'football';
+
+	return {
+		eventName,
+		description,
+		odds: oddsMatch[1],
+		stake: parseFloat(stakeMatch[1].replace(',', '.')),
+		bookmaker,
+		sport,
+	};
+}
+
+// Format des cotes publiées MANUELLEMENT par l'utilisatrice sur le canal
+// payant : une image ("COTE BOOSTÉE ...") où vivent le match, le marché et
+// la cote -- jamais en texte, donc illisible par ce worker -- suivie d'une
+// légende qui ne contient QUE le bookmaker, l'heure de dispo et un tableau
+// de mise par tranche de solde ("20€ / 15€ / 10€* / 5€"), la ligne marquée
+// d'un "*" étant celle à utiliser dans le bilan (demande explicite de
+// l'utilisatrice, cf. capture d'écran fournie). On extrait ce qu'on peut de
+// la légende puis on retrouve événement/marché/cote en recoupant avec le
+// digest du jour de winamax-flash-boost sur l'heure de dispo -- seule donnée
+// suffisamment fiable pour identifier le bon item sans ambiguïté.
+function parseManualImagePostForBax(caption) {
+	if (!/cote\s*boost/i.test(caption)) return null;
+	const lines = caption.split('\n').map((l) => l.trim()).filter(Boolean);
+	if (!lines.length) return null;
+
+	const lowerFull = caption.toLowerCase();
+	const bookmaker = BOOKMAKER_KEYWORDS.find(([kw]) => lowerFull.includes(kw))?.[1] || null;
+	if (!bookmaker) return null;
+
+	// La ligne à utiliser pour le bilan est celle qui porte l'astérisque
+	// ("10€* ➔ 50€ ≤ solde < 150€") -- pas "Mise max : X€" comme sur nos
+	// propres posts automatiques.
+	const stakeLine = lines.find((l) => /\d+(?:[.,]\d+)?\s*€\s*\*/.test(l));
+	const stakeMatch = stakeLine?.match(/(\d+(?:[.,]\d+)?)\s*€\s*\*/);
+	if (!stakeMatch) return null;
+	const stake = parseFloat(stakeMatch[1].replace(',', '.'));
+
+	const kickoffMatch = caption.match(/(\d{1,2}h\d{2})/);
+	const kickoff = kickoffMatch ? kickoffMatch[1] : null;
+
+	const sportMatch = SPORT_TEXT_KEYWORDS.find(([kw]) => lowerFull.includes(kw));
+	const sport = sportMatch ? sportMatch[1] : 'football';
+
+	return { bookmaker, stake, kickoff, sport };
+}
+
+// Recoupe un post manuel (bookmaker + heure de dispo, sans event/marché/cote)
+// avec le digest du jour de winamax-flash-boost pour retrouver l'item exact.
+// Seul recoupement fiable disponible (voir parseManualImagePostForBax) -- si
+// 0 ou plusieurs items partagent la même heure de dispo, on renonce plutôt
+// que de deviner (silencieusement faux serait pire qu'absent).
+async function findWinamaxDigestMatch(env, { kickoff }) {
+	if (!kickoff) return null;
+	try {
+		const res = await env.WINAMAX_WORKER.fetch('https://winamax-flash-boost/digest-list-debug');
+		if (!res.ok) return null;
+		const { items } = await res.json();
+		const matches = (items || []).filter((it) => it.kickoff === kickoff);
+		if (matches.length !== 1) return null;
+		return matches[0];
+	} catch {
+		return null;
+	}
+}
+
 // Compétitions continentales -> drapeau européen. Championnats nationaux ->
 // drapeau du pays. Heuristique sur le nom de ligue, forcément imparfaite --
 // à enrichir au fil des cas réels rencontrés.
@@ -5191,28 +5322,13 @@ async function checkAndPost(env) {
 		} catch (e) {
 			console.log('checkAndPost: sendTelegramMessage failed for', boost.marketId, ':', String(e));
 			await logError(env, 'checkAndPost:send', `${boost.marketId}: ${String(e)}`);
-			continue; // pas de log bet-analytix si le post Telegram lui-même a échoué
-		}
-		// Log bet-analytix (bilan perso) -- toujours en meilleur effort, ne doit
-		// JAMAIS faire échouer/retarder le post Telegram qui vient de réussir.
-		try {
-			await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					eventName: boost.eventName,
-					description: boost.description,
-					odds: boost.newOdds,
-					stake: boost.maxStake,
-					bookmaker: 'unibet',
-					sport: boost.sport,
-				}),
-			});
-		} catch (e) {
-			console.log('checkAndPost: bet-analytix log failed for', boost.marketId, ':', String(e));
-			await logError(env, 'checkAndPost:bax', `${boost.marketId}: ${String(e)}`);
 		}
 	}
+	// Pas d'appel direct à bet-analytix-sync ici -- le webhook Telegram
+	// (/telegram-webhook plus bas) écoute déjà le canal payant en temps réel
+	// et logge TOUT ce qui y est posté, qu'il vienne d'ici ou d'un post
+	// manuel de l'utilisatrice (Betclic, GCB Winamax invisibles au scraper).
+	// Un appel direct en plus aurait doublé chaque flash automatique.
 	return { checked: boosts.length, eligible: eligible.length, posted };
 }
 
@@ -5377,7 +5493,60 @@ export default {
 			const update = await request.json().catch(() => null);
 			console.log('telegram-webhook update:', JSON.stringify(update));
 			const msg = update?.message || update?.channel_post;
-			const text = (msg?.text || '').trim();
+			// .text pour un message texte (nos posts auto), .caption pour un
+			// message photo (les posts manuels de l'utilisatrice -- l'image "COTE
+			// BOOSTÉE" porte le match/marché/cote, la légende porte juste
+			// bookmaker/heure/mise -- voir parseManualImagePostForBax).
+			const text = (msg?.text || msg?.caption || '').trim();
+			// Journalisation automatique du bilan (bet-analytix) : TOUT ce qui est
+			// posté sur le canal payant est loggé -- que ça vienne des flash
+			// automatiques (Winamax/Unibet, texte pur) ou d'une sélection manuelle
+			// de l'utilisatrice (image + légende, recoupée avec le digest du jour
+			// pour retrouver event/marché/cote). Demande explicite, plus fiable
+			// que de lui faire donner les détails à la main à chaque fois. Échec
+			// silencieux si le format ne correspond à rien de connu (visible via
+			// /errors de bet-analytix-sync -- rien ne bloque le post Telegram
+			// lui-même, qui a déjà eu lieu de toute façon).
+			if (msg && String(msg.chat?.id) === String(env.TELEGRAM_CHAT_ID) && text) {
+				try {
+					let parsed = parseChannelPostForBax(text);
+					if (!parsed) {
+						const manual = parseManualImagePostForBax(text);
+						if (!manual) {
+							await logError(env, 'telegram-webhook:bax-parse', `texte non reconnu: ${text.slice(0, 200)}`);
+						} else if (manual.bookmaker !== 'winamax') {
+							// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
+							// tant qu'un premier cas réel ne nous donne pas de format à
+							// gérer (cf. passation.md).
+							await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (pas de source de recoupement): ${text.slice(0, 200)}`);
+						} else {
+							const match = await findWinamaxDigestMatch(env, manual);
+							if (!match) {
+								await logError(env, 'telegram-webhook:bax-parse', `post manuel non recoupé (kickoff=${manual.kickoff}): ${text.slice(0, 200)}`);
+							} else {
+								parsed = {
+									eventName: match.eventName,
+									description: match.description,
+									odds: String(match.newOdds),
+									stake: manual.stake,
+									bookmaker: manual.bookmaker,
+									sport: manual.sport,
+								};
+							}
+						}
+					}
+					if (parsed) {
+						await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(parsed),
+						});
+					}
+				} catch (e) {
+					console.log('telegram-webhook: bet-analytix log failed:', String(e));
+					await logError(env, 'telegram-webhook:bax', String(e));
+				}
+			}
 			// Réservé à l'usage perso (canal privé de monitoring) -- pas une
 			// commande publique, on ignore tout le reste silencieusement. Restera
 			// fermé (rien ne s'exécute) tant que MONITORING_CHAT_ID n'est pas
@@ -5400,6 +5569,13 @@ export default {
 				await sendToChat(env, msg.chat.id, reply);
 			}
 			return new Response('OK', { status: 200 });
+		}
+		if (url.pathname === '/test-bax-parse' && request.method === 'POST') {
+			const text = await request.text();
+			const auto = parseChannelPostForBax(text);
+			const manual = auto ? null : parseManualImagePostForBax(text);
+			const match = manual?.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : null;
+			return new Response(JSON.stringify({ auto, manual, digestMatch: match }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/errors') {
 			const list = await env.SEEN_BOOSTS.list({ prefix: 'errlog:' });
