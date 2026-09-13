@@ -20,3 +20,12 @@ binding = "BROWSER"
 [[kv_namespaces]]
 binding = "SEEN_BOOSTS"
 id = "1051561f98ad443a91b22580c377d92c"
+
+# Service binding, PAS un fetch() HTTP classique vers *.workers.dev -- un
+# Worker ne peut pas appeler un autre *.workers.dev du même compte par
+# fetch() normal (bloqué par Cloudflare, erreur 1042), voir content-pipeline
+# pour le précédent. Utilisé pour logger automatiquement chaque cote flash
+# éligible dans bet-analytix (bilan perso de l'utilisatrice).
+[[services]]
+binding = "BAX_WORKER"
+service = "bet-analytix-sync"

@@ -19,3 +19,10 @@ id = "868f54d1e944414cbe155759cb1a3405"
 # binding que winamax-flash-boost.
 [browser]
 binding = "BROWSER"
+
+# Service binding, PAS un fetch() HTTP classique vers *.workers.dev -- voir
+# winamax-flash-boost/wrangler.toml pour l'explication complète. Utilisé
+# pour logger automatiquement chaque cote flash éligible dans bet-analytix.
+[[services]]
+binding = "BAX_WORKER"
+service = "bet-analytix-sync"

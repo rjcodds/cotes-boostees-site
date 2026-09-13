@@ -1,0 +1,14 @@
+name = "bet-analytix-sync"
+main = "index.js"
+compatibility_date = "2025-01-01"
+
+# A créer avec : wrangler kv:namespace create SEEN_BOOSTS
+# (utilisé seulement pour le journal d'erreurs /errors -- pas de dédoublonnage
+# ici, contrairement aux autres workers, ce service ne fait qu'enregistrer)
+[[kv_namespaces]]
+binding = "SEEN_BOOSTS"
+id = "6d974ef0cf8543ea8ca4a6a3d0e89050"
+
+# Secrets à poser avec `wrangler secret put <NOM>` :
+#   BETANALYTIX_EMAIL     -- email du compte bet-analytix de l'utilisatrice
+#   BETANALYTIX_PASSWORD  -- mot de passe du même compte
