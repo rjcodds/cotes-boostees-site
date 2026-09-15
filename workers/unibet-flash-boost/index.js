@@ -173,8 +173,13 @@ function parseManualImagePostForBax(caption) {
 	if (!stakeMatch) return null;
 	const stake = parseFloat(stakeMatch[1].replace(',', '.'));
 
-	const kickoffMatch = caption.match(/(\d{1,2}h\d{2})/);
-	const kickoff = kickoffMatch ? kickoffMatch[1] : null;
+	// "HHhMM" la plupart du temps, mais "HHh" tout court (sans minutes) quand
+	// l'heure tombe pile -- vu en direct sur plusieurs vrais posts ("Dispo
+	// jusqu'à 19h🚨", jamais "19h00"). Sans le rendre optionnel, ces cas
+	// donnaient kickoff=null -> jamais recoupés avec le digest (qui, lui,
+	// stocke toujours "19h00" via formatKickoffTime -- normalisé pareil ici).
+	const kickoffMatch = caption.match(/(\d{1,2})h(\d{2})?/);
+	const kickoff = kickoffMatch ? `${kickoffMatch[1]}h${kickoffMatch[2] || '00'}` : null;
 
 	const sportMatch = SPORT_TEXT_KEYWORDS.find(([kw]) => lowerFull.includes(kw));
 	const sport = sportMatch ? sportMatch[1] : 'football';
@@ -199,6 +204,24 @@ async function findWinamaxDigestMatch(env, { kickoff }) {
 	} catch {
 		return null;
 	}
+}
+
+// Même recoupement que findWinamaxDigestMatch, mais contre le digest de CE
+// worker (Unibet a aussi des posts manuels -- "COTE BOOSTÉE UNIBET", vu en
+// direct sur le canal payant, initialement non gérés faute de recoupement).
+// Pas d'appel HTTP/service binding nécessaire : KV local, lu directement.
+async function findUnibetDigestMatch(env, { kickoff }) {
+	if (!kickoff) return null;
+	const date = todayKey();
+	const list = await env.SEEN_BOOSTS.list({ prefix: `digestitem:${date}:` });
+	const items = [];
+	for (const key of list.keys) {
+		const raw = await env.SEEN_BOOSTS.get(key.name);
+		if (raw) items.push(JSON.parse(raw));
+	}
+	const matches = items.filter((it) => it.kickoff === kickoff);
+	if (matches.length !== 1) return null;
+	return matches[0];
 }
 
 // Compétitions continentales -> drapeau européen. Championnats nationaux ->
@@ -636,7 +659,14 @@ async function logDigestItem(env, boost, edge) {
 	const key = `digestitem:${todayKey()}:${boost.marketId}`;
 	await env.SEEN_BOOSTS.put(
 		key,
-		JSON.stringify({ eventName: boost.eventName, description: boost.description, newOdds: boost.newOdds, edge }),
+		JSON.stringify({
+			eventName: boost.eventName,
+			description: boost.description,
+			newOdds: boost.newOdds,
+			edge,
+			kickoff: boost.kickoff || null,
+			maxStake: boost.maxStake ?? null,
+		}),
 		{ expirationTtl: 2 * 24 * 60 * 60 }
 	);
 }
@@ -5546,13 +5576,14 @@ export default {
 						const manual = parseManualImagePostForBax(text);
 						if (!manual) {
 							await logError(env, 'telegram-webhook:bax-parse', `texte non reconnu: ${text.slice(0, 200)}`);
-						} else if (manual.bookmaker !== 'winamax') {
+						} else if (manual.bookmaker !== 'winamax' && manual.bookmaker !== 'unibet') {
 							// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
 							// tant qu'un premier cas réel ne nous donne pas de format à
 							// gérer (cf. passation.md).
 							await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (pas de source de recoupement): ${text.slice(0, 200)}`);
 						} else {
-							const match = await findWinamaxDigestMatch(env, manual);
+							const match =
+								manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
 							if (!match) {
 								await logError(env, 'telegram-webhook:bax-parse', `post manuel non recoupé (kickoff=${manual.kickoff}): ${text.slice(0, 200)}`);
 							} else {
@@ -5606,7 +5637,12 @@ export default {
 			const text = await request.text();
 			const auto = parseChannelPostForBax(text);
 			const manual = auto ? null : parseManualImagePostForBax(text);
-			const match = manual?.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : null;
+			const match =
+				manual?.bookmaker === 'winamax'
+					? await findWinamaxDigestMatch(env, manual)
+					: manual?.bookmaker === 'unibet'
+					? await findUnibetDigestMatch(env, manual)
+					: null;
 			return new Response(JSON.stringify({ auto, manual, digestMatch: match }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/errors') {
