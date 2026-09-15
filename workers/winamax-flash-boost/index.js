@@ -4356,6 +4356,26 @@ async function findPiwiScheduleReference(leg) {
 				);
 				back = sels?.[0]?.back || null;
 			}
+		} else if (leg.type === 'scheduleHomeTeamTotal') {
+			// Marché "{Équipe} Over/Under N.5 Goals" (nom de l'équipe DANS le nom
+			// du marché, seuil aussi -- pas dans le handicap du runner, contrairement
+			// à scheduleTotal). Vérifié en direct : présent en football (Piwi
+			// La Liga, "Alaves Over/Under 0.5/1.5/2.5 Goals"), ABSENT en hockey
+			// (Piwi Czech Extraliga + NHL vérifiés : seulement Moneyline/60 Minute
+			// 3 Way/Total Goals/Handicap, jamais de marché par équipe) -- donc ce
+			// repli ne trouvera jamais rien pour un "chaque équipe à domicile
+			// marque..." hockey (cas réel Liiga qui a motivé cette sonde), mais reste
+			// utile si Winamax sort un jour la même combo en football.
+			const homeAway = await piwiHomeAway(piwiEvent, leg.sport);
+			if (homeAway?.home) {
+				const suffix = ` Over/Under ${leg.points} Goals`;
+				const mid = piwiMarketIdForTeamSuffix(piwiEvent, suffix, homeAway.home);
+				if (mid) {
+					const prefix = leg.side === 'over' ? 'Over' : 'Under';
+					const sels = await fetchPiwiSelections(mid, piwiEvent.eventId, (name) => name?.startsWith(prefix));
+					back = sels?.[0]?.back || null;
+				}
+			}
 		}
 		if (!back) return null;
 		probProduct *= 1 / back;
