@@ -3480,28 +3480,40 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 			// doublons"), distinct de la rotation de marketId déjà corrigée
 			// dans diffBoosts (celle-là empêche un FAUX doublon de contenu,
 			// pas un vrai double-post du même événement).
-			const spawnGuardKey = `spawnposted:${event.type}:${boostContentKey(event.boost)}:${event.boost.newOdds}`;
-			if (await env.SEEN_BOOSTS.get(spawnGuardKey)) continue;
-			// Deuxième garde-fou, complémentaire de spawnGuardKey ci-dessus et du
-			// repli par contenu dans diffBoosts -- celui-là ne couvre qu'UN seul
-			// cycle de diff (l'instantané immédiatement précédent). Si une promo
-			// disparaît de currentBoosts pendant au moins un cycle complet (site
-			// Unibet instable, ou vraiment retirée puis réémise avec un nouveau
-			// marketId + cote ajustée), diffBoosts la voit comme "remove" puis,
-			// plus tard, comme un "add" tout neuf -- plus aucun lien avec
-			// l'ancien marketId à ce stade. Repéré en direct : "V.Gyokeres
-			// buteur et son équipe gagne" (Ipswich - Arsenal) reparti en double
-			// sur le canal spawn à 2h d'intervalle, deux marketId différents
-			// (192948667 puis 193034249), cote différente (3,05 -> 2,75) --
-			// même contenu (event+marché), donc pas utile de re-alerter "Nouvelle
-			// cote" une deuxième fois pour l'utilisatrice. Mémoire indépendante
-			// du snapshot, TTL large (SEEN_TTL_SECONDS, 6h) pour couvrir ce genre
-			// de trou sans supprimer une vraie nouvelle occurrence le lendemain.
+			// Repli complémentaire du repli par contenu dans diffBoosts -- celui-là
+			// ne couvre qu'UN seul cycle de diff (l'instantané immédiatement
+			// précédent). Si une promo disparaît de currentBoosts pendant au moins
+			// un cycle complet (site Unibet instable, ou vraiment retirée puis
+			// réémise avec un nouveau marketId), diffBoosts la voit comme "remove"
+			// puis, plus tard, comme un "add" tout neuf -- plus aucun lien avec
+			// l'ancien marketId à ce stade. Repéré en direct : "V.Gyokeres buteur
+			// et son équipe gagne" (Ipswich - Arsenal) et "J.Bellingham décisif..."
+			// (Elche - Real Madrid) repartis en double sur le canal spawn à ~2h
+			// d'intervalle, marketId ET cote différents à chaque fois. Mémoire
+			// indépendante du snapshot (`recentlyalerted:{contenu}`, TTL
+			// SEEN_TTL_SECONDS = 6h, couvre largement ce genre de trou). Distingue
+			// deux cas (demande explicite de l'utilisatrice, ne jamais avaler un
+			// vrai changement en silence) :
+			// - contenu ET cote strictement identiques à la dernière alerte -> rien
+			//   n'a changé, pas d'alerte du tout (comportement déjà voulu pour un
+			//   simple doublon).
+			// - contenu identique mais cote différente -> PAS un doublon à ignorer,
+			//   mais une vraie "cote modifiée" à publier normalement (le marketId a
+			//   juste rotationné entre-temps) : on convertit l'événement en
+			//   `change` AVANT le calcul de spawnGuardKey, pour qu'il suive
+			//   exactement le même chemin qu'un changement de cote classique.
 			if (event.type === 'add') {
 				const contentGuardKey = `recentlyalerted:${boostContentKey(event.boost)}`;
-				if (await env.SEEN_BOOSTS.get(contentGuardKey)) continue;
+				const prevAlerted = await env.SEEN_BOOSTS.get(contentGuardKey);
+				if (prevAlerted === event.boost.newOdds) continue;
+				if (prevAlerted) {
+					event.type = 'change';
+					event.prevOdds = prevAlerted;
+				}
 				await env.SEEN_BOOSTS.put(contentGuardKey, event.boost.newOdds, { expirationTtl: SEEN_TTL_SECONDS });
 			}
+			const spawnGuardKey = `spawnposted:${event.type}:${boostContentKey(event.boost)}:${event.boost.newOdds}`;
+			if (await env.SEEN_BOOSTS.get(spawnGuardKey)) continue;
 			const { text, refLine, edge } = await formatMonitoringMessage(env, event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 			await env.SEEN_BOOSTS.put(spawnGuardKey, '1', { expirationTtl: SEEN_TTL_SECONDS });
