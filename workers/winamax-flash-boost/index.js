@@ -596,6 +596,12 @@ function matchLeaguesByLabel(leagueList, leagueLabel, countryHint) {
 	const labelVariants = [raw];
 	if (words.length > 1) labelVariants.push(words.slice(0, -1).join(' '));
 	if (words.length > 2) labelVariants.push(words.slice(0, -2).join(' '));
+	// Sponsor en PRÉFIXE (pas juste en suffixe comme "Ligue 2 BKT" ci-dessus) --
+	// ex: "Synerglace Ligue Magnus" (Winamax) vs "France - Ligue Magnus"
+	// (Pinnacle, sans le sponsor). Un seul mot retiré (le nom de sponsor est
+	// quasi toujours un seul mot/marque) : bug réel trouvé sur une vraie cote
+	// Synerglace Ligue Magnus jamais résolue faute de cet essai.
+	if (words.length > 1) labelVariants.push(words.slice(1).join(' '));
 
 	const scored = [];
 	for (const league of leagueList) {
@@ -1447,6 +1453,20 @@ function findBothWinASet(leagues, teamA, teamB, points = 2.5) {
 
 // --- Analyse du texte français libre des cotes boostées ---
 
+// Pinnacle numérote la période "match complet" du marché total/spread
+// différemment selon le sport : 0 pour la plupart (foot/basket/tennis/etc,
+// "1ère mi-temps" = 1), mais PAS en hockey -- vérifié en direct qu'aucun
+// marché total/spread hockey n'a period=0 (seulement 1=1ère période et
+// 6=match complet). Le moneyline hockey, lui, a bien period=0 (pas concerné).
+// Trouvé sur une vraie cote Synerglace Ligue Magnus ("Plus de 4,5 buts dans
+// chacun des 6 matchs du jour") jamais résolue par Pinnacle malgré un
+// recoupement matchs/heure/ligue déjà correct -- même bug de fond que le
+// marché team_total absent en hockey trouvé juste avant sur une cote Liiga,
+// mais ici le marché EXISTE, seul le numéro de période était faux.
+function fullMatchTotalPeriod(sportKey) {
+	return sportKey === 'hockey' ? 6 : 0;
+}
+
 // Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
 // marge / total buts-ou-points). Le texte peut décrire une seule leg (pari
 // simple ou combiné même-match) ou plusieurs legs sur des matchs différents
@@ -1716,7 +1736,7 @@ function parseLegs(eventName, description, sportKey) {
 				minute: scheduleTotalMatch[4] ? parseInt(scheduleTotalMatch[4], 10) : scheduleTotalMatch[5] ? parseInt(scheduleTotalMatch[5], 10) : 0,
 				side: 'over',
 				points: 0.5,
-				period: scheduleTotalMatch[1] ? 1 : 0,
+				period: scheduleTotalMatch[1] ? 1 : fullMatchTotalPeriod(sportKey),
 				sport: sportKey,
 			},
 		];
@@ -1749,7 +1769,7 @@ function parseLegs(eventName, description, sportKey) {
 					: 0,
 				side: /plus/i.test(scheduleTotalHourMatch[1]) ? 'over' : 'under',
 				points: parseFloat(scheduleTotalHourMatch[2].replace(',', '.')),
-				period: 0,
+				period: fullMatchTotalPeriod(sportKey),
 				sport: sportKey,
 			},
 		];
@@ -1771,7 +1791,7 @@ function parseLegs(eventName, description, sportKey) {
 				minute: null,
 				side: 'over',
 				points: parseFloat(scheduleTotalDayMatch[1].replace(',', '.')),
-				period: 0,
+				period: fullMatchTotalPeriod(sportKey),
 				sport: sportKey,
 			},
 		];
@@ -2634,7 +2654,7 @@ function parseLegs(eventName, description, sportKey) {
 				teamB,
 				side: /plus/i.test(totalMatch[1]) ? 'over' : 'under',
 				points: parseFloat(totalMatch[2].replace(',', '.')),
-				period: isFirstHalf ? 1 : 0,
+				period: isFirstHalf ? 1 : fullMatchTotalPeriod(sportKey),
 				sport: sportKey,
 			},
 		];
@@ -5460,6 +5480,27 @@ export default {
 			const legs = parseLegs(`${a} - ${b}`, d, sport);
 			const ref = await findPinnacleReference(`${a} - ${b}`, d, league, sport);
 			return new Response(JSON.stringify({ legs, ref, line: formatPinnacleReference(ref) }), { headers: { 'Content-Type': 'application/json' } });
+		}
+		if (url.pathname === '/debug-schedule-pinnacle') {
+			// Route de debug permanente -- dump les étapes intermédiaires de
+			// résolution Pinnacle pour un combo "schedule" (legs parsées, candidats
+			// de ligue par nom, résultat final), pour diagnostiquer sans deviner
+			// pourquoi une cote schedule-based reste sans ligne de référence
+			// (parsing ? nom de ligue ? nombre de matchs ? marché/seuil manquant
+			// chez Pinnacle ?).
+			const eventName = url.searchParams.get('eventName');
+			const description = url.searchParams.get('description');
+			const league = url.searchParams.get('league') || null;
+			const sport = url.searchParams.get('sport') || 'hockey';
+			if (!eventName || !description) return new Response('usage: ?eventName=...&description=...&sport=hockey&league=(optionnel)', { status: 400 });
+			const legs = parseLegs(eventName, description, sport);
+			const leagueList = await fetchLeagueList(sport);
+			const candidates = matchLeaguesByLabel(leagueList, league, leagueCountryHint(league));
+			const ref = await findPinnacleReference(eventName, description, league, sport);
+			return new Response(
+				JSON.stringify({ legs, candidates, leagueListSize: leagueList.length, ref, line: formatPinnacleReference(ref) }, null, 2),
+				{ headers: { 'Content-Type': 'application/json' } }
+			);
 		}
 		if (url.pathname === '/debug-raw-match') {
 			const q = (url.searchParams.get('q') || '').toLowerCase();
