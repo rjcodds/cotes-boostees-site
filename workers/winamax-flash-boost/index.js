@@ -3370,21 +3370,27 @@ async function postMonitoringDiff(env, prevBoosts, currentBoosts) {
 			//   juste rotationné entre-temps) : on convertit l'événement en
 			//   `change` AVANT le calcul de spawnGuardKey, pour qu'il suive
 			//   exactement le même chemin qu'un changement de cote classique.
+			const contentGuardKey = `recentlyalerted:${boostContentKey(event.boost)}`;
 			if (event.type === 'add') {
-				const contentGuardKey = `recentlyalerted:${boostContentKey(event.boost)}`;
 				const prevAlerted = await env.SEEN_BOOSTS.get(contentGuardKey);
 				if (prevAlerted === event.boost.newOdds) continue;
 				if (prevAlerted) {
 					event.type = 'change';
 					event.prevOdds = prevAlerted;
 				}
-				await env.SEEN_BOOSTS.put(contentGuardKey, event.boost.newOdds, { expirationTtl: SEEN_TTL_SECONDS });
 			}
 			const spawnGuardKey = `spawnposted:${event.type}:${boostContentKey(event.boost)}:${event.boost.newOdds}`;
 			if (await env.SEEN_BOOSTS.get(spawnGuardKey)) continue;
 			const { text, refLine, edge } = await formatMonitoringMessage(env, event);
 			const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
 			await env.SEEN_BOOSTS.put(spawnGuardKey, '1', { expirationTtl: SEEN_TTL_SECONDS });
+			// Mémoire de contenu tenue à jour pour TOUT event réellement posté (add
+			// ET change, pas seulement add) -- sinon un changement de cote normal
+			// (même marketId, chemin `change` natif de diffBoosts) laisse cette
+			// mémoire périmée sur l'ancienne cote ; une réapparition ultérieure avec
+			// la cote DÉJÀ à jour semblerait alors "différente" par erreur (fausse
+			// "cote modifiée" au lieu du silence attendu pour un vrai doublon).
+			await env.SEEN_BOOSTS.put(contentGuardKey, event.boost.newOdds, { expirationTtl: SEEN_TTL_SECONDS });
 
 			if (event.type === 'add') {
 				if (refLine && sent?.message_id) {
