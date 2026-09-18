@@ -218,6 +218,117 @@ export default {
 			}
 		}
 
+		// Les 3 routes de recon ci-dessous minent un vrai token d'accès
+		// bet-analytix (via baxLogin, les identifiants réels de l'utilisatrice)
+		// pour appeler l'API en son nom -- SANS ce garde-fou, n'importe qui
+		// trouvant l'URL publique du worker aurait pu s'en servir comme proxy
+		// authentifié vers son compte bet-analytix (confused deputy). Trouvé et
+		// corrigé avant tout usage réel, suite à une revue de sécurité
+		// automatique déclenchée pendant leur écriture -- jamais exploité.
+		const isDebugRoute = url.pathname === '/debug-raw' || url.pathname === '/debug-bet' || url.pathname === '/debug-settle';
+		if (isDebugRoute) {
+			if (!env.DEBUG_TOKEN || request.headers.get('x-debug-token') !== env.DEBUG_TOKEN) {
+				return new Response('forbidden', { status: 403 });
+			}
+		}
+
+		if (url.pathname === '/debug-raw' && request.method === 'GET') {
+			// Route de recon temporaire -- appelle n'importe quel chemin GET de
+			// l'API bet-analytix authentifié, pour explorer le schéma sans
+			// deviner à l'aveugle (ex: ?path=/bankroll/1712234).
+			const path = url.searchParams.get('path');
+			// Whitelist stricte : chemin relatif uniquement (pas de "//" qui
+			// changerait d'hôte, pas de "..", pas de user-info/port). SSRF
+			// signalé par la revue de sécurité -- même si BAX_API est concaténé
+			// en dur devant, mieux vaut ne pas faire confiance à une simple
+			// concaténation de chaîne pour empêcher tout détournement.
+			if (!path || !/^\/[A-Za-z0-9/_-]+$/.test(path) || path.includes('..')) {
+				return new Response('usage: ?path=/bankroll/1712234 (chemin relatif simple uniquement)', { status: 400 });
+			}
+			try {
+				const accessToken = await baxLogin(env);
+				const headers = {
+					Authorization: `Bearer ${accessToken}`,
+					Origin: BAX_APP_ORIGIN,
+					Referer: `${BAX_APP_ORIGIN}/`,
+					'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+					app: 'appBax',
+					sid: BAX_SID,
+				};
+				const res = await fetch(`${BAX_API}${path}`, { headers });
+				const text = await res.text();
+				return new Response(JSON.stringify({ status: res.status, body: text }), { headers: { 'Content-Type': 'application/json' } });
+			} catch (e) {
+				console.log('debug-raw failed:', String(e));
+				return new Response(JSON.stringify({ error: 'internal error' }), { status: 500 });
+			}
+		}
+
+		if (url.pathname === '/debug-bet' && request.method === 'GET') {
+			// Route de recon temporaire -- récupère la représentation complète
+			// d'un pari existant (schéma exact attendu pour une mise à jour de
+			// statut, jamais vu jusqu'ici -- toute la logique existante ne fait
+			// QUE créer des paris "en attente").
+			const id = url.searchParams.get('id');
+			if (!id || !/^\d+$/.test(id)) return new Response('usage: ?id=123', { status: 400 });
+			try {
+				const accessToken = await baxLogin(env);
+				const headers = {
+					Authorization: `Bearer ${accessToken}`,
+					Origin: BAX_APP_ORIGIN,
+					Referer: `${BAX_APP_ORIGIN}/`,
+					'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+					app: 'appBax',
+					sid: BAX_SID,
+				};
+				const res = await fetch(`${BAX_API}/bet/${id}`, { headers });
+				const text = await res.text();
+				return new Response(JSON.stringify({ status: res.status, body: text }), { headers: { 'Content-Type': 'application/json' } });
+			} catch (e) {
+				console.log('debug-bet failed:', String(e));
+				return new Response(JSON.stringify({ error: 'internal error' }), { status: 500 });
+			}
+		}
+
+		if (url.pathname === '/debug-settle' && request.method === 'POST') {
+			// Route de recon temporaire -- essaie plusieurs endpoints/méthodes
+			// candidats pour marquer un pari gagné/perdu, sans supposer lequel
+			// est le bon. Body attendu : {"id": 123, "status": 1, "gain": 12.5}.
+			let payload;
+			try {
+				payload = await request.json();
+			} catch {
+				return new Response('invalid JSON body', { status: 400 });
+			}
+			const { id, status, gain } = payload || {};
+			if (!id || !Number.isInteger(id)) return new Response('usage: {"id": 123, "status": 1, "gain": 12.5}', { status: 400 });
+			try {
+				const accessToken = await baxLogin(env);
+				const headers = {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${accessToken}`,
+					Origin: BAX_APP_ORIGIN,
+					Referer: `${BAX_APP_ORIGIN}/`,
+					'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+					app: 'appBax',
+					sid: BAX_SID,
+				};
+				const attempts = [];
+				const fullBody = payload.fullBody || { status, gain };
+				const candidates = [{ method: 'PUT', url: `${BAX_API}/bet/${id}`, body: fullBody }];
+				for (const c of candidates) {
+					const res = await fetch(c.url, { method: c.method, headers, body: JSON.stringify(c.body) });
+					const text = await res.text();
+					attempts.push({ method: c.method, url: c.url, status: res.status, body: text.slice(0, 600) });
+					if (res.ok) break;
+				}
+				return new Response(JSON.stringify({ attempts }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+			} catch (e) {
+				console.log('debug-settle failed:', String(e));
+				return new Response(JSON.stringify({ error: 'internal error' }), { status: 500 });
+			}
+		}
+
 		if (url.pathname === '/errors') {
 			const list = await env.SEEN_BOOSTS.list({ prefix: 'errlog:' });
 			const entries = (await Promise.all(list.keys.map((k) => env.SEEN_BOOSTS.get(k.name))))
