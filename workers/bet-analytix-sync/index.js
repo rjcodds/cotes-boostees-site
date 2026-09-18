@@ -42,10 +42,15 @@ const BOOKMAKER_IDS = {
 
 // SEUL "football: 1" est confirmé (via un vrai pari test créé dans l'app).
 // Le reste est déduit de l'ORDRE d'un dictionnaire de traduction interne à
-// l'app (football, tennis, basketball, rugby, handball, volleyball, hockey,
-// footballus, baseball...) -- probable mais pas vérifié. Si une cote se
-// retrouve mal catégorisée dans bet-analytix, corriger ici (impact limité :
-// ça ne fausse que la répartition par sport, jamais les montants/résultats).
+// l'app (clé "sport" du fichier i18n Nuxt, `sport:{football:...,tennis:...}`)
+// -- probable mais pas vérifié différemment de football. Les 6 entrées
+// boxing/badminton/golf/tennisDeTable/mma/formule1 ont été ajoutées en lisant
+// le MÊME dictionnaire plus loin (positions 10/11/13/20/26/31 sur 76 sports
+// listés) pendant un backfill de paris historiques (capture d'écran du canal)
+// qui en avait besoin -- même méthode de découverte que les 8 premières
+// entrées, donc même niveau de confiance, pas plus. Si une cote se retrouve
+// mal catégorisée dans bet-analytix, corriger ici (impact limité : ça ne
+// fausse que la répartition par sport, jamais les montants/résultats).
 const SPORT_IDS = {
 	football: 1,
 	tennis: 2,
@@ -55,6 +60,12 @@ const SPORT_IDS = {
 	volleyball: 6,
 	hockey: 7,
 	baseball: 9,
+	boxing: 10,
+	badminton: 11,
+	golf: 13,
+	tennis_de_table: 20,
+	mma: 26,
+	formule1: 31,
 };
 
 function parseFrenchDecimal(s) {
@@ -160,7 +171,17 @@ export default {
 			} catch {
 				return new Response(JSON.stringify({ ok: false, error: 'invalid JSON body' }), { status: 400 });
 			}
-			const { eventName, description, odds, stake, bookmaker, sport } = payload || {};
+			const { eventName, description, odds, stake, bookmaker, sport, date } = payload || {};
+			// "date" optionnel (YYYY-MM-DD) -- utilisé pour le backfill de paris
+			// historiques (capture d'écran/vidéo du canal), où le pari a réellement
+			// été placé un autre jour que "maintenant". Repli sur la date/heure
+			// actuelle (comportement d'origine) si absent ou invalide -- c'est le
+			// cas normal du flux automatique (posts en direct).
+			let when = new Date();
+			if (date) {
+				const parsed = new Date(`${date}T12:00:00Z`);
+				if (!isNaN(parsed.getTime())) when = parsed;
+			}
 			const bookmakerId = BOOKMAKER_IDS[String(bookmaker || '').toLowerCase()];
 			const sportId = SPORT_IDS[String(sport || '').toLowerCase()];
 			const oddsDecimal = typeof odds === 'number' ? odds : parseFrenchDecimal(odds);
@@ -187,7 +208,7 @@ export default {
 					stake: stakeNumber,
 					bookmakerId,
 					sportId,
-					when: new Date(),
+					when,
 				});
 				return new Response(JSON.stringify({ ok: true, created }), { headers: { 'Content-Type': 'application/json' } });
 			} catch (e) {
