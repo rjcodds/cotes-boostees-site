@@ -150,6 +150,90 @@ async function baxCreateBet(env, accessToken, { label, odds, stake, bookmakerId,
 	return text ? JSON.parse(text) : null;
 }
 
+// Statuts de pari trouvés en capturant une vraie requête PUT /bet/:id envoyée
+// par l'app en marquant un pari "Perdu" (utilisatrice, capture Network du
+// 2026-09-18) : status:2 confirmé = perdu. Le reste est déduit du même
+// dictionnaire i18n `stateBet` déjà utilisé pour SPORT_IDS (ordre :
+// pending, won, lost, refunded, halfWon, halfLost, cashout, canceled) --
+// SEUL `lost:2` est empiriquement confirmé, les autres suivent la même
+// logique d'ordre que les IDs de sport (fiable jusqu'ici, mais pas vérifiée
+// une par une). Vérifier `won` en direct avant de s'y fier à grande échelle.
+const BET_STATUS = {
+	pending: 0,
+	won: 1,
+	lost: 2,
+	refunded: 3,
+	halfWon: 4,
+	halfLost: 5,
+	cashout: 6,
+	canceled: 7,
+};
+
+// Marque un pari EXISTANT gagné/perdu/etc. -- PUT (pas PATCH), et contrairement
+// à baxCreateBet, le payload attendu ici reprend le format "réponse" de l'API
+// (bookmaker et stake en chaînes, pas de wrapper "stakes", pas de "category"
+// au niveau racine, "commission" à null tout court) plutôt que le format
+// "requête" utilisé par POST /bet -- trouvé en capturant la vraie requête
+// envoyée par l'app, aucune des deux formes devinées avant n'avait marché
+// (juste un 500 générique, aucun détail exploitable).
+function buildSettleBody({ betId, status, label, odds, stake, bookmakerId, sportId, when }) {
+	const date = when.toISOString().slice(0, 10);
+	const time = when.toISOString().slice(11, 16);
+	return {
+		bankroll: BAX_BANKROLL_ID,
+		bonus: null,
+		bookmaker: String(bookmakerId),
+		cashout: null,
+		commission: null,
+		date,
+		eachway: null,
+		freebet: false,
+		live: false,
+		masked: false,
+		note: null,
+		overallLabel: label,
+		selections: [
+			{
+				betType: null,
+				category: null,
+				closing: null,
+				competition: null,
+				estimatedProbability: null,
+				id: betId,
+				label,
+				odds: odds.toFixed(3),
+				sport: sportId,
+				status,
+			},
+		],
+		stake: stake.toFixed(2),
+		time,
+		tipster: null,
+		type: 1,
+	};
+}
+
+async function baxSettleBet(env, accessToken, params) {
+	const { betId } = params;
+	const body = buildSettleBody(params);
+	const res = await fetch(`${BAX_API}/bet/${betId}`, {
+		method: 'PUT',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${accessToken}`,
+			Origin: BAX_APP_ORIGIN,
+			Referer: `${BAX_APP_ORIGIN}/`,
+			'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			app: 'appBax',
+			sid: BAX_SID,
+		},
+		body: JSON.stringify(body),
+	});
+	const text = await res.text();
+	if (!res.ok) throw new Error(`baxSettleBet failed: HTTP ${res.status} -- ${text.slice(0, 300)}`);
+	return text ? JSON.parse(text) : null;
+}
+
 async function logError(env, source, message) {
 	if (!env.SEEN_BOOSTS) return;
 	try {
@@ -218,18 +302,112 @@ export default {
 			}
 		}
 
-		// Les 3 routes de recon ci-dessous minent un vrai token d'accès
+		if (url.pathname === '/settle' && request.method === 'POST') {
+			// Marque un pari déjà créé comme gagné/perdu/etc. -- PAS utilisé par
+			// le flux automatique des deux workers principaux (eux ne créent que
+			// des paris "en attente" via /log, réglés à la main par
+			// l'utilisatrice comme toujours), seulement pour le chantier de
+			// règlement automatique par recherche web. Même garde `x-debug-token`
+			// que les routes de recon ci-dessous : une vraie mutation sur le
+			// bilan de l'utilisatrice ne doit pas être accessible à qui trouve
+			// l'URL publique du worker, même logique que le confused deputy déjà
+			// corrigé pour /debug-*.
+			if (!env.DEBUG_TOKEN || request.headers.get('x-debug-token') !== env.DEBUG_TOKEN) {
+				return new Response('forbidden', { status: 403 });
+			}
+			let payload;
+			try {
+				payload = await request.json();
+			} catch {
+				return new Response(JSON.stringify({ ok: false, error: 'invalid JSON body' }), { status: 400 });
+			}
+			const { id, status, eventName, description, odds, stake, bookmaker, sport, date } = payload || {};
+			const statusCode = typeof status === 'number' ? status : BET_STATUS[String(status || '').toLowerCase()];
+			const bookmakerId = BOOKMAKER_IDS[String(bookmaker || '').toLowerCase()];
+			const sportId = SPORT_IDS[String(sport || '').toLowerCase()];
+			const oddsDecimal = typeof odds === 'number' ? odds : parseFrenchDecimal(odds);
+			const stakeNumber = typeof stake === 'number' ? stake : parseFloat(stake);
+			let when = new Date();
+			if (date) {
+				const parsed = new Date(`${date}T12:00:00Z`);
+				if (!isNaN(parsed.getTime())) when = parsed;
+			}
+			if (!id || !Number.isInteger(id)) return new Response(JSON.stringify({ ok: false, error: 'id manquant ou invalide' }), { status: 400 });
+			if (statusCode == null) return new Response(JSON.stringify({ ok: false, error: `status inconnu: ${status}` }), { status: 400 });
+			if (!bookmakerId) return new Response(JSON.stringify({ ok: false, error: `bookmaker inconnu: ${bookmaker}` }), { status: 400 });
+			if (!sportId) return new Response(JSON.stringify({ ok: false, error: `sport inconnu: ${sport}` }), { status: 400 });
+			if (oddsDecimal == null || stakeNumber == null || !eventName || !description) {
+				return new Response(JSON.stringify({ ok: false, error: 'payload incomplet' }), { status: 400 });
+			}
+			try {
+				const accessToken = await baxLogin(env);
+				const label = `${eventName} — ${description}`;
+				const updated = await baxSettleBet(env, accessToken, {
+					betId: id,
+					status: statusCode,
+					label,
+					odds: oddsDecimal,
+					stake: stakeNumber,
+					bookmakerId,
+					sportId,
+					when,
+				});
+				return new Response(JSON.stringify({ ok: true, updated }), { headers: { 'Content-Type': 'application/json' } });
+			} catch (e) {
+				console.log('bet-analytix-sync /settle failed:', String(e));
+				await logError(env, 'bet-analytix-sync', String(e));
+				return new Response(JSON.stringify({ ok: false, error: String(e) }), { status: 200 });
+			}
+		}
+
+		// TOUTES les routes /debug-* ci-dessous minent un vrai token d'accès
 		// bet-analytix (via baxLogin, les identifiants réels de l'utilisatrice)
 		// pour appeler l'API en son nom -- SANS ce garde-fou, n'importe qui
 		// trouvant l'URL publique du worker aurait pu s'en servir comme proxy
 		// authentifié vers son compte bet-analytix (confused deputy). Trouvé et
 		// corrigé avant tout usage réel, suite à une revue de sécurité
 		// automatique déclenchée pendant leur écriture -- jamais exploité.
-		const isDebugRoute = url.pathname === '/debug-raw' || url.pathname === '/debug-bet' || url.pathname === '/debug-settle';
-		if (isDebugRoute) {
+		// Préfixe générique (pas une liste explicite à tenir à jour) pour que
+		// toute NOUVELLE route /debug-* future soit protégée par défaut plutôt
+		// que d'avoir à se souvenir de l'ajouter à une liste.
+		if (url.pathname.startsWith('/debug-')) {
 			if (!env.DEBUG_TOKEN || request.headers.get('x-debug-token') !== env.DEBUG_TOKEN) {
 				return new Response('forbidden', { status: 403 });
 			}
+		}
+
+		if (url.pathname === '/debug-settle-body' && request.method === 'POST') {
+			// Route de recon temporaire -- construit le body que /settle enverrait
+			// SANS l'envoyer, pour comparer octet par octet contre une vraie
+			// requête capturée dans le navigateur (voir buildSettleBody).
+			let payload;
+			try {
+				payload = await request.json();
+			} catch {
+				return new Response('invalid JSON body', { status: 400 });
+			}
+			const { id, status, eventName, description, odds, stake, bookmaker, sport, date } = payload || {};
+			const statusCode = typeof status === 'number' ? status : BET_STATUS[String(status || '').toLowerCase()];
+			const bookmakerId = BOOKMAKER_IDS[String(bookmaker || '').toLowerCase()];
+			const sportId = SPORT_IDS[String(sport || '').toLowerCase()];
+			const oddsDecimal = typeof odds === 'number' ? odds : parseFrenchDecimal(odds);
+			const stakeNumber = typeof stake === 'number' ? stake : parseFloat(stake);
+			let when = new Date();
+			if (date) {
+				const parsed = new Date(`${date}T12:00:00Z`);
+				if (!isNaN(parsed.getTime())) when = parsed;
+			}
+			const body = buildSettleBody({
+				betId: id,
+				status: statusCode,
+				label: `${eventName} — ${description}`,
+				odds: oddsDecimal,
+				stake: stakeNumber,
+				bookmakerId,
+				sportId,
+				when,
+			});
+			return new Response(JSON.stringify(body, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 
 		if (url.pathname === '/debug-raw' && request.method === 'GET') {
@@ -286,45 +464,6 @@ export default {
 				return new Response(JSON.stringify({ status: res.status, body: text }), { headers: { 'Content-Type': 'application/json' } });
 			} catch (e) {
 				console.log('debug-bet failed:', String(e));
-				return new Response(JSON.stringify({ error: 'internal error' }), { status: 500 });
-			}
-		}
-
-		if (url.pathname === '/debug-settle' && request.method === 'POST') {
-			// Route de recon temporaire -- essaie plusieurs endpoints/méthodes
-			// candidats pour marquer un pari gagné/perdu, sans supposer lequel
-			// est le bon. Body attendu : {"id": 123, "status": 1, "gain": 12.5}.
-			let payload;
-			try {
-				payload = await request.json();
-			} catch {
-				return new Response('invalid JSON body', { status: 400 });
-			}
-			const { id, status, gain } = payload || {};
-			if (!id || !Number.isInteger(id)) return new Response('usage: {"id": 123, "status": 1, "gain": 12.5}', { status: 400 });
-			try {
-				const accessToken = await baxLogin(env);
-				const headers = {
-					'Content-Type': 'application/json',
-					Authorization: `Bearer ${accessToken}`,
-					Origin: BAX_APP_ORIGIN,
-					Referer: `${BAX_APP_ORIGIN}/`,
-					'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-					app: 'appBax',
-					sid: BAX_SID,
-				};
-				const attempts = [];
-				const fullBody = payload.fullBody || { status, gain };
-				const candidates = [{ method: 'PUT', url: `${BAX_API}/bet/${id}`, body: fullBody }];
-				for (const c of candidates) {
-					const res = await fetch(c.url, { method: c.method, headers, body: JSON.stringify(c.body) });
-					const text = await res.text();
-					attempts.push({ method: c.method, url: c.url, status: res.status, body: text.slice(0, 600) });
-					if (res.ok) break;
-				}
-				return new Response(JSON.stringify({ attempts }, null, 2), { headers: { 'Content-Type': 'application/json' } });
-			} catch (e) {
-				console.log('debug-settle failed:', String(e));
 				return new Response(JSON.stringify({ error: 'internal error' }), { status: 500 });
 			}
 		}
