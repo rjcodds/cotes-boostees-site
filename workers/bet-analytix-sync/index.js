@@ -420,8 +420,8 @@ export default {
 			// signalé par la revue de sécurité -- même si BAX_API est concaténé
 			// en dur devant, mieux vaut ne pas faire confiance à une simple
 			// concaténation de chaîne pour empêcher tout détournement.
-			if (!path || !/^\/[A-Za-z0-9/_-]+$/.test(path) || path.includes('..')) {
-				return new Response('usage: ?path=/bankroll/1712234 (chemin relatif simple uniquement)', { status: 400 });
+			if (!path || !/^\/[A-Za-z0-9/_-]+(\?[A-Za-z0-9_=&%.,-]*)?$/.test(path) || path.includes('..') || path.includes('//', 1)) {
+				return new Response('usage: ?path=/bankroll/1712234 (chemin relatif simple, query string simple optionnelle)', { status: 400 });
 			}
 			try {
 				const accessToken = await baxLogin(env);
