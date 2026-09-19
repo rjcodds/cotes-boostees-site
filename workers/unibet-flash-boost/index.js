@@ -184,23 +184,35 @@ function parseManualImagePostForBax(caption) {
 	const sportMatch = SPORT_TEXT_KEYWORDS.find(([kw]) => lowerFull.includes(kw));
 	const sport = sportMatch ? sportMatch[1] : 'football';
 
-	return { bookmaker, stake, kickoff, sport };
+	// "X2"/"X3" dans l'en-tête ("COTE BOOSTÉE UNIBET X2 ⚽️") -- combine PLUSIEURS
+	// matchs différents sous UNE mise partagée (même astérisque pour tous les
+	// legs, vu en direct). La légende ne contient qu'UNE heure de dispo pour
+	// l'ensemble -- trouvé en comparant un vrai post X2 capturé par
+	// l'utilisatrice contre un post simple : structure de légende IDENTIQUE à
+	// part ce marqueur, donc les N matchs partagent forcément la même heure de
+	// dispo (sinon rien ne permettrait de les distinguer dans le texte).
+	const legCountMatch = caption.match(/\bX(\d)\b/i);
+	const legCount = legCountMatch ? parseInt(legCountMatch[1], 10) : 1;
+
+	return { bookmaker, stake, kickoff, sport, legCount };
 }
 
 // Recoupe un post manuel (bookmaker + heure de dispo, sans event/marché/cote)
-// avec le digest du jour de winamax-flash-boost pour retrouver l'item exact.
-// Seul recoupement fiable disponible (voir parseManualImagePostForBax) -- si
-// 0 ou plusieurs items partagent la même heure de dispo, on renonce plutôt
-// que de deviner (silencieusement faux serait pire qu'absent).
-async function findWinamaxDigestMatch(env, { kickoff }) {
+// avec le digest du jour de winamax-flash-boost pour retrouver le(s) item(s)
+// exact(s). Pour un post "X2"/"X3", legCount>1 : on exige alors EXACTEMENT
+// legCount items à cette heure (pas 1) et on les renvoie tous, chacun devenant
+// sa propre ligne dans le bilan avec la même mise. Si 0 ou un nombre différent
+// de legCount partagent la même heure de dispo, on renonce plutôt que de
+// deviner lesquels (silencieusement faux serait pire qu'absent).
+async function findWinamaxDigestMatch(env, { kickoff, legCount = 1 }) {
 	if (!kickoff) return null;
 	try {
 		const res = await env.WINAMAX_WORKER.fetch('https://winamax-flash-boost/digest-list-debug');
 		if (!res.ok) return null;
 		const { items } = await res.json();
 		const matches = (items || []).filter((it) => it.kickoff === kickoff);
-		if (matches.length !== 1) return null;
-		return matches[0];
+		if (matches.length !== legCount) return null;
+		return matches;
 	} catch {
 		return null;
 	}
@@ -210,7 +222,7 @@ async function findWinamaxDigestMatch(env, { kickoff }) {
 // worker (Unibet a aussi des posts manuels -- "COTE BOOSTÉE UNIBET", vu en
 // direct sur le canal payant, initialement non gérés faute de recoupement).
 // Pas d'appel HTTP/service binding nécessaire : KV local, lu directement.
-async function findUnibetDigestMatch(env, { kickoff }) {
+async function findUnibetDigestMatch(env, { kickoff, legCount = 1 }) {
 	if (!kickoff) return null;
 	const date = todayKey();
 	const list = await env.SEEN_BOOSTS.list({ prefix: `digestitem:${date}:` });
@@ -220,8 +232,8 @@ async function findUnibetDigestMatch(env, { kickoff }) {
 		if (raw) items.push(JSON.parse(raw));
 	}
 	const matches = items.filter((it) => it.kickoff === kickoff);
-	if (matches.length !== 1) return null;
-	return matches[0];
+	if (matches.length !== legCount) return null;
+	return matches;
 }
 
 // Compétitions continentales -> drapeau européen. Championnats nationaux ->
@@ -5577,34 +5589,41 @@ export default {
 			// lui-même, qui a déjà eu lieu de toute façon).
 			if (msg && String(msg.chat?.id) === String(env.TELEGRAM_CHAT_ID) && text) {
 				try {
-					let parsed = parseChannelPostForBax(text);
-					if (!parsed) {
+					let toLog = [];
+					const auto = parseChannelPostForBax(text);
+					if (auto) {
+						toLog = [auto];
+					} else {
 						const manual = parseManualImagePostForBax(text);
 						if (!manual) {
-							await logError(env, 'telegram-webhook:bax-parse', `texte non reconnu: ${text.slice(0, 200)}`);
+							await logError(env, 'telegram-webhook:bax-parse', `texte non reconnu: ${text.slice(0, 1000)}`);
 						} else if (manual.bookmaker !== 'winamax' && manual.bookmaker !== 'unibet') {
 							// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
 							// tant qu'un premier cas réel ne nous donne pas de format à
 							// gérer (cf. passation.md).
-							await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (pas de source de recoupement): ${text.slice(0, 200)}`);
+							await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (pas de source de recoupement): ${text.slice(0, 1000)}`);
 						} else {
-							const match =
+							const matches =
 								manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
-							if (!match) {
-								await logError(env, 'telegram-webhook:bax-parse', `post manuel non recoupé (kickoff=${manual.kickoff}): ${text.slice(0, 200)}`);
+							if (!matches) {
+								await logError(
+									env,
+									'telegram-webhook:bax-parse',
+									`post manuel non recoupé (kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`
+								);
 							} else {
-								parsed = {
+								toLog = matches.map((match) => ({
 									eventName: match.eventName,
 									description: match.description,
 									odds: String(match.newOdds),
 									stake: manual.stake,
 									bookmaker: manual.bookmaker,
 									sport: manual.sport,
-								};
+								}));
 							}
 						}
 					}
-					if (parsed) {
+					for (const parsed of toLog) {
 						await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json' },
@@ -5643,13 +5662,13 @@ export default {
 			const text = await request.text();
 			const auto = parseChannelPostForBax(text);
 			const manual = auto ? null : parseManualImagePostForBax(text);
-			const match =
+			const matches =
 				manual?.bookmaker === 'winamax'
 					? await findWinamaxDigestMatch(env, manual)
 					: manual?.bookmaker === 'unibet'
 					? await findUnibetDigestMatch(env, manual)
 					: null;
-			return new Response(JSON.stringify({ auto, manual, digestMatch: match }, null, 2), { headers: { 'Content-Type': 'application/json' } });
+			return new Response(JSON.stringify({ auto, manual, digestMatches: matches }, null, 2), { headers: { 'Content-Type': 'application/json' } });
 		}
 		if (url.pathname === '/errors') {
 			const list = await env.SEEN_BOOSTS.list({ prefix: 'errlog:' });
