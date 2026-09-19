@@ -468,6 +468,38 @@ export default {
 			}
 		}
 
+		if (url.pathname === '/debug-fetch-test' && request.method === 'GET') {
+			// Route de recon temporaire -- teste si une source de scores gratuite
+			// est joignable depuis l'IP du Worker (ESPN bloqué en 403 Akamai
+			// depuis le sandbox local, avec ou sans headers navigateur). Liste
+			// blanche stricte sur l'hôte -- signalé SSRF par la revue de sécurité
+			// automatique même protégé par DEBUG_TOKEN (un token qui fuite ne doit
+			// pas donner un accès de scan réseau arbitraire depuis l'IP Cloudflare).
+			const ALLOWED_HOSTS = ['site.api.espn.com', 'www.thesportsdb.com', 'httpbin.org'];
+			const target = url.searchParams.get('url') || 'https://site.api.espn.com/apis/site/v2/sports/soccer/fra.1/scoreboard';
+			let parsedTarget;
+			try {
+				parsedTarget = new URL(target);
+			} catch {
+				return new Response('forbidden', { status: 403 });
+			}
+			if (parsedTarget.protocol !== 'https:' || !ALLOWED_HOSTS.includes(parsedTarget.hostname)) {
+				return new Response('forbidden', { status: 403 });
+			}
+			try {
+				const res = await fetch(target, {
+					headers: {
+						'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+						Accept: 'application/json',
+					},
+				});
+				const text = await res.text();
+				return new Response(JSON.stringify({ status: res.status, bodyPreview: text.slice(0, 500) }), { headers: { 'Content-Type': 'application/json' } });
+			} catch (e) {
+				return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+			}
+		}
+
 		if (url.pathname === '/errors') {
 			const list = await env.SEEN_BOOSTS.list({ prefix: 'errlog:' });
 			const entries = (await Promise.all(list.keys.map((k) => env.SEEN_BOOSTS.get(k.name))))

@@ -34,3 +34,11 @@ service = "bet-analytix-sync"
 [[services]]
 binding = "WINAMAX_WORKER"
 service = "winamax-flash-boost"
+
+# Lecture directe (OCR) de la carte "COTE BOOSTÉE" postée en image sur le
+# canal payant -- évite de dépendre uniquement du recoupement par heure de
+# dispo, ambigu quand plusieurs boosts partagent le même créneau (cf.
+# ocrBoostedOddsImage). Quota gratuit quotidien largement suffisant au
+# volume de ce canal (usage réel : quelques neurones par image).
+[ai]
+binding = "AI"

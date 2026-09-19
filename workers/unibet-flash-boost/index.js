@@ -236,6 +236,71 @@ async function findUnibetDigestMatch(env, { kickoff, legCount = 1 }) {
 	return matches;
 }
 
+// Lit directement la carte "COTE BOOSTÉE" (image générée par l'app du
+// bookmaker) via un modèle de vision Workers AI -- élimine la dépendance au
+// recoupement par heure de dispo, ambigu quand plusieurs boosts partagent le
+// même créneau (cas réel : 4 boosts Winamax à 01h30 le même soir, un seul
+// résolu par coïncidence car les autres étaient un combo distinct). Ne
+// couvre que les posts à une seule jambe (legCount=1) -- une carte combo
+// (X2/X3) est en fait plusieurs images dans un album Telegram, non gérée
+// ici pour l'instant, cf. passation.md.
+async function ocrBoostedOddsImage(env, fileId) {
+	try {
+		const fileRes = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`);
+		const fileData = await fileRes.json();
+		const filePath = fileData?.result?.file_path;
+		if (!filePath) return null;
+		const imgRes = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`);
+		if (!imgRes.ok) return null;
+		const buf = await imgRes.arrayBuffer();
+		let binary = '';
+		const bytes = new Uint8Array(buf);
+		for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+		const base64 = btoa(binary);
+
+		const result = await env.AI.run('@cf/meta/llama-3.2-11b-vision-instruct', {
+			messages: [
+				{
+					role: 'user',
+					content: [
+						{
+							type: 'text',
+							text:
+								'Cette image est une carte "COTE BOOSTÉE" d\'un site de paris sportifs. ' +
+								'Lis UNIQUEMENT le texte affiché sur la carte noire (ignore tout le reste). ' +
+								"Réponds STRICTEMENT en JSON, sans aucun texte autour, avec ce format exact : " +
+								'{"eventName": "Équipe A - Équipe B", "description": "intitulé exact du pari", "odds": "2,40"}. ' +
+								'"odds" est la cote en gros dans le bandeau rouge (PAS la cote barrée à côté). ' +
+								'Utilise une virgule comme séparateur décimal pour la cote, comme affiché sur la carte.',
+						},
+						{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+					],
+				},
+			],
+		});
+
+		const raw = (result?.response || '').trim();
+		const jsonMatch = raw.match(/\{[\s\S]*\}/);
+		if (!jsonMatch) return null;
+		const parsed = JSON.parse(jsonMatch[0]);
+		if (
+			!parsed.eventName ||
+			!parsed.description ||
+			typeof parsed.eventName !== 'string' ||
+			typeof parsed.description !== 'string' ||
+			parsed.eventName.length > 200 ||
+			parsed.description.length > 300 ||
+			!/^\d{1,4}([.,]\d{1,3})?$/.test(String(parsed.odds || '').trim())
+		) {
+			return null;
+		}
+		return { eventName: parsed.eventName.trim(), description: parsed.description.trim(), odds: String(parsed.odds).trim() };
+	} catch (e) {
+		console.log('ocrBoostedOddsImage failed:', String(e));
+		return null;
+	}
+}
+
 // Compétitions continentales -> drapeau européen. Championnats nationaux ->
 // drapeau du pays. Heuristique sur le nom de ligue, forcément imparfaite --
 // à enrichir au fil des cas réels rencontrés.
@@ -5597,29 +5662,54 @@ export default {
 						const manual = parseManualImagePostForBax(text);
 						if (!manual) {
 							await logError(env, 'telegram-webhook:bax-parse', `texte non reconnu: ${text.slice(0, 1000)}`);
-						} else if (manual.bookmaker !== 'winamax' && manual.bookmaker !== 'unibet') {
-							// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
-							// tant qu'un premier cas réel ne nous donne pas de format à
-							// gérer (cf. passation.md).
-							await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (pas de source de recoupement): ${text.slice(0, 1000)}`);
 						} else {
-							const matches =
-								manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
-							if (!matches) {
-								await logError(
-									env,
-									'telegram-webhook:bax-parse',
-									`post manuel non recoupé (kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`
-								);
+							// Lecture directe de la carte image (OCR) en priorité -- ne
+							// dépend pas de l'heure de dispo, donc insensible aux
+							// collisions de créneau (plusieurs boosts indépendants à la
+							// même heure). Limité aux posts à une seule jambe : une carte
+							// combo (X2/X3) est en réalité plusieurs images dans un album
+							// Telegram, non gérée ici. Repli sur le recoupement par digest
+							// si l'OCR échoue, est ambigu, ou pour Betclic/Bet365/combos.
+							const photo = msg.photo && msg.photo.length ? msg.photo[msg.photo.length - 1] : null;
+							let ocr = null;
+							if (photo && manual.legCount === 1) {
+								ocr = await ocrBoostedOddsImage(env, photo.file_id);
+							}
+							if (ocr) {
+								toLog = [
+									{
+										eventName: ocr.eventName,
+										description: ocr.description,
+										odds: ocr.odds,
+										stake: manual.stake,
+										bookmaker: manual.bookmaker,
+										sport: manual.sport,
+									},
+								];
+							} else if (manual.bookmaker !== 'winamax' && manual.bookmaker !== 'unibet') {
+								// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
+								// tant qu'un premier cas réel ne nous donne pas de format à
+								// gérer (cf. passation.md).
+								await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (OCR échoué, pas de source de recoupement): ${text.slice(0, 1000)}`);
 							} else {
-								toLog = matches.map((match) => ({
-									eventName: match.eventName,
-									description: match.description,
-									odds: String(match.newOdds),
-									stake: manual.stake,
-									bookmaker: manual.bookmaker,
-									sport: manual.sport,
-								}));
+								const matches =
+									manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
+								if (!matches) {
+									await logError(
+										env,
+										'telegram-webhook:bax-parse',
+										`post manuel non recoupé (OCR échoué, kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`
+									);
+								} else {
+									toLog = matches.map((match) => ({
+										eventName: match.eventName,
+										description: match.description,
+										odds: String(match.newOdds),
+										stake: manual.stake,
+										bookmaker: manual.bookmaker,
+										sport: manual.sport,
+									}));
+								}
 							}
 						}
 					}
