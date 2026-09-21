@@ -1709,6 +1709,16 @@ function findBothWinASet(leagues, teamA, teamB, points = 2.5) {
 
 // --- Analyse du texte français libre des cotes boostées ---
 
+// Seuils en toutes lettres ("au moins deux buts") -- vu en direct sur une
+// vraie cote 2. Bundesliga, jusqu'ici toujours en chiffre ("3,5 buts") dans
+// tout le reste du fichier. Volontairement limité aux petits nombres
+// réalistes pour un seuil de buts/points par match.
+const FRENCH_NUMBER_WORDS = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10 };
+function parseFrenchNumber(raw) {
+	if (/^\d+$/.test(raw)) return parseInt(raw, 10);
+	return FRENCH_NUMBER_WORDS[raw.toLowerCase()] ?? null;
+}
+
 // Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
 // marge / total buts-ou-points). Le texte peut décrire une seule leg (pari
 // simple ou combiné même-match) ou plusieurs legs sur des matchs différents
@@ -2073,22 +2083,59 @@ function parseLegs(eventName, description, sportKey) {
 	// jour" -- total buts DE L'ÉQUIPE À DOMICILE (pas le score du match
 	// entier), dans chacun des N matchs de la journée, sans heure précise
 	// (comme scheduleTotalDayMatch). Vraie cote Liiga (hockey) vue sur
-	// Winamax, jamais parsée avant.
+	// Winamax, jamais parsée avant. Seuil en chiffre OU en toutes lettres
+	// (voir FRENCH_NUMBER_WORDS).
+	const NUMBER_WORD_ALT = '(?:\\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)';
 	const scheduleHomeTeamTotalMatch = d.match(
-		/chaque\s+equipe\s+a\s+domicile\s+marque\s+au\s+moins\s+(\d+)\s*buts?\s+lors\s+des\s+(\d+)\s+matchs?\s+du\s+jour/i
+		new RegExp(`chaque\\s+equipe\\s+a\\s+domicile\\s+marque\\s+au\\s+moins\\s+(${NUMBER_WORD_ALT})\\s*buts?\\s+lors\\s+des\\s+(\\d+)\\s+matchs?\\s+du\\s+jour`, 'i')
 	);
 	if (scheduleHomeTeamTotalMatch) {
-		return [
-			{
-				type: 'scheduleHomeTeamTotal',
-				count: parseInt(scheduleHomeTeamTotalMatch[2], 10),
-				hour: null,
-				minute: null,
-				side: 'over',
-				points: parseInt(scheduleHomeTeamTotalMatch[1], 10) - 0.5,
-				sport: sportKey,
-			},
-		];
+		const threshold = parseFrenchNumber(scheduleHomeTeamTotalMatch[1]);
+		if (threshold != null) {
+			return [
+				{
+					type: 'scheduleHomeTeamTotal',
+					count: parseInt(scheduleHomeTeamTotalMatch[2], 10),
+					hour: null,
+					minute: null,
+					side: 'over',
+					points: threshold - 0.5,
+					sport: sportKey,
+				},
+			];
+		}
+	}
+
+	// Même marché, mais borné à une heure précise plutôt qu'à "toute la
+	// journée" -- "Chaque équipe à domicile marque au moins N buts (N matchs
+	// à HHhMM)", même phrasé que scheduleHomeWin ci-dessus. Vraie cote 2.
+	// Bundesliga vue sur Winamax ("...deux buts (3 matchs à 13h30)"), jamais
+	// gérée jusqu'ici -- seule la variante "jour entier" existait.
+	const scheduleHomeTeamTotalHourMatch = d.match(
+		new RegExp(
+			`chaque\\s+equipe\\s+a\\s+domicile\\s+marque\\s+au\\s+moins\\s+(${NUMBER_WORD_ALT})\\s*buts?\\s*\\((\\d+)\\s+matchs?\\s+(?:a|de)\\s+(\\d{1,2})(?:h(\\d{2})?|:(\\d{2}))\\)`,
+			'i'
+		)
+	);
+	if (scheduleHomeTeamTotalHourMatch) {
+		const threshold = parseFrenchNumber(scheduleHomeTeamTotalHourMatch[1]);
+		if (threshold != null) {
+			return [
+				{
+					type: 'scheduleHomeTeamTotal',
+					count: parseInt(scheduleHomeTeamTotalHourMatch[2], 10),
+					hour: parseInt(scheduleHomeTeamTotalHourMatch[3], 10),
+					minute: scheduleHomeTeamTotalHourMatch[4]
+						? parseInt(scheduleHomeTeamTotalHourMatch[4], 10)
+						: scheduleHomeTeamTotalHourMatch[5]
+						? parseInt(scheduleHomeTeamTotalHourMatch[5], 10)
+						: 0,
+					side: 'over',
+					points: threshold - 0.5,
+					sport: sportKey,
+				},
+			];
+		}
 	}
 
 	// Combo multi-matchs total buts D'UNE équipe précise, noms explicites :
@@ -5653,6 +5700,21 @@ export default {
 			// /errors de bet-analytix-sync -- rien ne bloque le post Telegram
 			// lui-même, qui a déjà eu lieu de toute façon).
 			if (msg && String(msg.chat?.id) === String(env.TELEGRAM_CHAT_ID) && text) {
+				// Piste d'audit (demande explicite de l'utilisatrice : vérification
+				// 2x/semaine que tout ce qui est posté sur le canal payant est bien
+				// retranscrit dans le bilan, sans oubli ni doublon). Écrite en 2
+				// temps : un stub "reçu" tout de suite (pour prouver que le message
+				// est bien arrivé même si tout plante ensuite), puis mise à jour avec
+				// le résultat final. TTL 60 jours -- largement assez pour une
+				// vérification bi-hebdomadaire avec marge de rattrapage.
+				const auditKey = `paidmsg:${todayKey()}:${msg.message_id}`;
+				const auditTtl = { expirationTtl: 60 * 24 * 60 * 60 };
+				await env.SEEN_BOOSTS.put(
+					auditKey,
+					JSON.stringify({ ts: Date.now(), messageId: msg.message_id, hasPhoto: !!(msg.photo && msg.photo.length), rawText: text.slice(0, 500), status: 'received' }),
+					auditTtl
+				);
+				let auditResult = { status: 'error', reason: 'exception avant traitement' };
 				try {
 					let toLog = [];
 					const auto = parseChannelPostForBax(text);
@@ -5661,7 +5723,9 @@ export default {
 					} else {
 						const manual = parseManualImagePostForBax(text);
 						if (!manual) {
-							await logError(env, 'telegram-webhook:bax-parse', `texte non reconnu: ${text.slice(0, 1000)}`);
+							const reason = `texte non reconnu: ${text.slice(0, 1000)}`;
+							await logError(env, 'telegram-webhook:bax-parse', reason);
+							auditResult = { status: 'error', reason };
 						} else {
 							// Lecture directe de la carte image (OCR) en priorité -- ne
 							// dépend pas de l'heure de dispo, donc insensible aux
@@ -5690,16 +5754,16 @@ export default {
 								// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
 								// tant qu'un premier cas réel ne nous donne pas de format à
 								// gérer (cf. passation.md).
-								await logError(env, 'telegram-webhook:bax-parse', `post manuel ${manual.bookmaker} non géré (OCR échoué, pas de source de recoupement): ${text.slice(0, 1000)}`);
+								const reason = `post manuel ${manual.bookmaker} non géré (OCR échoué, pas de source de recoupement): ${text.slice(0, 1000)}`;
+								await logError(env, 'telegram-webhook:bax-parse', reason);
+								auditResult = { status: 'error', reason };
 							} else {
 								const matches =
 									manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
 								if (!matches) {
-									await logError(
-										env,
-										'telegram-webhook:bax-parse',
-										`post manuel non recoupé (OCR échoué, kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`
-									);
+									const reason = `post manuel non recoupé (OCR échoué, kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`;
+									await logError(env, 'telegram-webhook:bax-parse', reason);
+									auditResult = { status: 'error', reason };
 								} else {
 									toLog = matches.map((match) => ({
 										eventName: match.eventName,
@@ -5713,17 +5777,36 @@ export default {
 							}
 						}
 					}
-					for (const parsed of toLog) {
-						await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify(parsed),
-						});
+					if (toLog.length) {
+						const logged = [];
+						for (const parsed of toLog) {
+							const logRes = await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify(parsed),
+							});
+							const logJson = await logRes.json().catch(() => null);
+							const betId = logJson?.created?.[0]?.id ?? null;
+							logged.push({ ...parsed, betId, logOk: logRes.ok });
+						}
+						auditResult = { status: logged.every((l) => l.logOk && l.betId) ? 'logged' : 'error', logged };
 					}
 				} catch (e) {
 					console.log('telegram-webhook: bet-analytix log failed:', String(e));
 					await logError(env, 'telegram-webhook:bax', String(e));
+					auditResult = { status: 'error', reason: String(e) };
 				}
+				await env.SEEN_BOOSTS.put(
+					auditKey,
+					JSON.stringify({
+						ts: Date.now(),
+						messageId: msg.message_id,
+						hasPhoto: !!(msg.photo && msg.photo.length),
+						rawText: text.slice(0, 500),
+						...auditResult,
+					}),
+					auditTtl
+				);
 			}
 			// Réservé à l'usage perso (canal privé de monitoring) -- pas une
 			// commande publique, on ignore tout le reste silencieusement. Restera
@@ -5768,6 +5851,58 @@ export default {
 				.sort((a, b) => b.ts - a.ts);
 			return new Response(JSON.stringify(entries), { headers: { 'Content-Type': 'application/json' } });
 		}
+
+		if (url.pathname === '/paid-audit-list') {
+			// Piste d'audit du canal payant (voir écriture `paidmsg:` dans
+			// /telegram-webhook) -- pour la vérification bi-hebdomadaire demandée
+			// par l'utilisatrice (retranscription bilan complète/sans doublon).
+			const from = url.searchParams.get('from');
+			const to = url.searchParams.get('to') || from;
+			if (!from || !/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+				return new Response('usage: ?from=YYYY-MM-DD&to=YYYY-MM-DD (to optionnel, défaut = from)', { status: 400 });
+			}
+			const cursor = new Date(`${from}T00:00:00Z`);
+			const end = new Date(`${to}T00:00:00Z`);
+			if (isNaN(cursor.getTime()) || isNaN(end.getTime()) || cursor > end) {
+				return new Response('plage de dates invalide', { status: 400 });
+			}
+			const entries = [];
+			while (cursor <= end) {
+				const dateStr = cursor.toISOString().slice(0, 10);
+				const list = await env.SEEN_BOOSTS.list({ prefix: `paidmsg:${dateStr}:` });
+				for (const k of list.keys) {
+					const raw = await env.SEEN_BOOSTS.get(k.name);
+					if (raw) entries.push(JSON.parse(raw));
+				}
+				cursor.setUTCDate(cursor.getUTCDate() + 1);
+			}
+			entries.sort((a, b) => a.ts - b.ts);
+			return new Response(JSON.stringify({ from, to, count: entries.length, entries }), { headers: { 'Content-Type': 'application/json' } });
+		}
+
+		if (url.pathname === '/spawn-notify' && request.method === 'POST') {
+			// Permet de poster un message ponctuel sur le canal spawn depuis en
+			// dehors du worker -- utilisé par l'audit bi-hebdomadaire du bilan pour
+			// signaler un doute de retranscription ou de résultat sans jamais
+			// écrire dans bet-analytix. Gardé derrière un jeton dédié, jamais public.
+			if (!env.DEBUG_TOKEN || request.headers.get('x-debug-token') !== env.DEBUG_TOKEN) {
+				return new Response('forbidden', { status: 403 });
+			}
+			if (!env.MONITORING_CHAT_ID) {
+				return new Response(JSON.stringify({ error: 'MONITORING_CHAT_ID non configuré' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+			}
+			const body = await request.json().catch(() => null);
+			const text = body?.text;
+			if (!text || typeof text !== 'string') return new Response('usage: {"text": "..."}', { status: 400 });
+			try {
+				const sent = await sendToChat(env, env.MONITORING_CHAT_ID, text);
+				return new Response(JSON.stringify({ ok: true, messageId: sent.message_id }), { headers: { 'Content-Type': 'application/json' } });
+			} catch (e) {
+				console.log('spawn-notify failed:', String(e));
+				return new Response(JSON.stringify({ error: 'internal error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+			}
+		}
+
 		return new Response('OK. Utilise /run pour déclencher un check manuel, /current pour le suivi.', { status: 200 });
 	},
 

@@ -1467,6 +1467,16 @@ function fullMatchTotalPeriod(sportKey) {
 	return sportKey === 'hockey' ? 6 : 0;
 }
 
+// Seuils en toutes lettres ("au moins deux buts") -- vu en direct sur une
+// vraie cote 2. Bundesliga, jusqu'ici toujours en chiffre ("3,5 buts") dans
+// tout le reste du fichier. Volontairement limité aux petits nombres
+// réalistes pour un seuil de buts/points par match.
+const FRENCH_NUMBER_WORDS = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10 };
+function parseFrenchNumber(raw) {
+	if (/^\d+$/.test(raw)) return parseInt(raw, 10);
+	return FRENCH_NUMBER_WORDS[raw.toLowerCase()] ?? null;
+}
+
 // Une "leg" = une condition portant sur une équipe précise (gagne / gagne par
 // marge / total buts-ou-points). Le texte peut décrire une seule leg (pari
 // simple ou combiné même-match) ou plusieurs legs sur des matchs différents
@@ -1822,22 +1832,59 @@ function parseLegs(eventName, description, sportKey) {
 	// jour" -- total buts DE L'ÉQUIPE À DOMICILE (pas le score du match
 	// entier), dans chacun des N matchs de la journée, sans heure précise
 	// (comme scheduleTotalDayMatch). Vraie cote Liiga (hockey) vue sur
-	// Winamax, jamais parsée avant.
+	// Winamax, jamais parsée avant. Seuil en chiffre OU en toutes lettres
+	// (voir FRENCH_NUMBER_WORDS).
+	const NUMBER_WORD_ALT = '(?:\\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix)';
 	const scheduleHomeTeamTotalMatch = d.match(
-		/chaque\s+equipe\s+a\s+domicile\s+marque\s+au\s+moins\s+(\d+)\s*buts?\s+lors\s+des\s+(\d+)\s+matchs?\s+du\s+jour/i
+		new RegExp(`chaque\\s+equipe\\s+a\\s+domicile\\s+marque\\s+au\\s+moins\\s+(${NUMBER_WORD_ALT})\\s*buts?\\s+lors\\s+des\\s+(\\d+)\\s+matchs?\\s+du\\s+jour`, 'i')
 	);
 	if (scheduleHomeTeamTotalMatch) {
-		return [
-			{
-				type: 'scheduleHomeTeamTotal',
-				count: parseInt(scheduleHomeTeamTotalMatch[2], 10),
-				hour: null,
-				minute: null,
-				side: 'over',
-				points: parseInt(scheduleHomeTeamTotalMatch[1], 10) - 0.5,
-				sport: sportKey,
-			},
-		];
+		const threshold = parseFrenchNumber(scheduleHomeTeamTotalMatch[1]);
+		if (threshold != null) {
+			return [
+				{
+					type: 'scheduleHomeTeamTotal',
+					count: parseInt(scheduleHomeTeamTotalMatch[2], 10),
+					hour: null,
+					minute: null,
+					side: 'over',
+					points: threshold - 0.5,
+					sport: sportKey,
+				},
+			];
+		}
+	}
+
+	// Même marché, mais borné à une heure précise plutôt qu'à "toute la
+	// journée" -- "Chaque équipe à domicile marque au moins N buts (N matchs
+	// à HHhMM)", même phrasé que scheduleHomeWin ci-dessus. Vraie cote 2.
+	// Bundesliga vue sur Winamax ("...deux buts (3 matchs à 13h30)"), jamais
+	// gérée jusqu'ici -- seule la variante "jour entier" existait.
+	const scheduleHomeTeamTotalHourMatch = d.match(
+		new RegExp(
+			`chaque\\s+equipe\\s+a\\s+domicile\\s+marque\\s+au\\s+moins\\s+(${NUMBER_WORD_ALT})\\s*buts?\\s*\\((\\d+)\\s+matchs?\\s+(?:a|de)\\s+(\\d{1,2})(?:h(\\d{2})?|:(\\d{2}))\\)`,
+			'i'
+		)
+	);
+	if (scheduleHomeTeamTotalHourMatch) {
+		const threshold = parseFrenchNumber(scheduleHomeTeamTotalHourMatch[1]);
+		if (threshold != null) {
+			return [
+				{
+					type: 'scheduleHomeTeamTotal',
+					count: parseInt(scheduleHomeTeamTotalHourMatch[2], 10),
+					hour: parseInt(scheduleHomeTeamTotalHourMatch[3], 10),
+					minute: scheduleHomeTeamTotalHourMatch[4]
+						? parseInt(scheduleHomeTeamTotalHourMatch[4], 10)
+						: scheduleHomeTeamTotalHourMatch[5]
+						? parseInt(scheduleHomeTeamTotalHourMatch[5], 10)
+						: 0,
+					side: 'over',
+					points: threshold - 0.5,
+					sport: sportKey,
+				},
+			];
+		}
 	}
 
 	// Combo multi-matchs total buts D'UNE équipe précise, noms explicites :
