@@ -181,8 +181,19 @@ function parseManualImagePostForBax(caption) {
 	const kickoffMatch = caption.match(/(\d{1,2})h(\d{2})?/);
 	const kickoff = kickoffMatch ? `${kickoffMatch[1]}h${kickoffMatch[2] || '00'}` : null;
 
+	// Emoji du sport EN PRIORITÉ (présent dans l'en-tête, "COTE BOOSTÉE UNIBET
+	// 🏐") -- oubli initial : SPORT_TEXT_KEYWORDS ne matche que des MOTS
+	// ("set", "smash"...) qui vivent dans le texte du MARCHÉ, jamais présent
+	// dans la légende d'un post manuel (seul le bookmaker/mise/heure y sont,
+	// le marché est dans l'image). Résultat : tout post manuel non-football
+	// retombait silencieusement sur 'football' par défaut, sport totalement
+	// faux dans le bilan (vu en direct sur "La France s'impose 3 sets à 0",
+	// posté avec 🏐 dans l'en-tête, loggé en football). `SPORT_KEY_BY_EMOJI`
+	// existait déjà (utilisé ailleurs pour les posts auto) mais n'était
+	// jamais consulté ici.
+	const emojiSportEntry = Object.entries(SPORT_KEY_BY_EMOJI).find(([emoji]) => caption.includes(emoji));
 	const sportMatch = SPORT_TEXT_KEYWORDS.find(([kw]) => lowerFull.includes(kw));
-	const sport = sportMatch ? sportMatch[1] : 'football';
+	const sport = emojiSportEntry ? emojiSportEntry[1] : sportMatch ? sportMatch[1] : 'football';
 
 	// "X2"/"X3" dans l'en-tête ("COTE BOOSTÉE UNIBET X2 ⚽️") -- combine PLUSIEURS
 	// matchs différents sous UNE mise partagée (même astérisque pour tous les
@@ -271,7 +282,9 @@ async function ocrBoostedOddsImage(env, fileId) {
 								"Réponds STRICTEMENT en JSON, sans aucun texte autour, avec ce format exact : " +
 								'{"eventName": "Équipe A - Équipe B", "description": "intitulé exact du pari", "odds": "2,40"}. ' +
 								'"odds" est la cote en gros dans le bandeau rouge (PAS la cote barrée à côté). ' +
-								'Utilise une virgule comme séparateur décimal pour la cote, comme affiché sur la carte.',
+								'Utilise une virgule comme séparateur décimal pour la cote, comme affiché sur la carte. ' +
+								'Si la carte montre plusieurs matchs différents (un combo), mets TOUS les noms d\'équipes ' +
+								'visibles dans "eventName" séparés par " / " -- ne le laisse JAMAIS vide ou générique.',
 						},
 						{ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
 					],
@@ -290,6 +303,12 @@ async function ocrBoostedOddsImage(env, fileId) {
 			typeof parsed.description !== 'string' ||
 			parsed.eventName.length > 200 ||
 			parsed.description.length > 300 ||
+			// Rejette un eventName "garbage" (juste un emoji/tiret, ex: "⚽  - ")
+			// -- vu en direct sur une carte combo multi-matchs que le modèle
+			// n'a pas su résumer malgré la consigne. Exige au moins un mot de 2
+			// lettres réelles (accents inclus) ; mieux vaut retomber sur le
+			// recoupement par digest que créer un pari avec un intitulé vide.
+			!/[A-Za-zÀ-ÿ]{2,}/.test(parsed.eventName) ||
 			!/^\d{1,4}([.,]\d{1,3})?$/.test(String(parsed.odds || '').trim())
 		) {
 			return null;
@@ -299,6 +318,70 @@ async function ocrBoostedOddsImage(env, fileId) {
 		console.log('ocrBoostedOddsImage failed:', String(e));
 		return null;
 	}
+}
+
+// Résout un post du canal payant (texte + éventuel file_id photo) en une
+// liste de lignes à logger dans bet-analytix, ou une raison d'échec.
+// Extrait de /telegram-webhook pour être réutilisable par /retry-paid-post
+// (rattrapage manuel d'un post resté en erreur, sans devoir tout réécrire).
+async function resolveToLogEntries(env, text, photoFileId) {
+	const auto = parseChannelPostForBax(text);
+	if (auto) return { toLog: [auto], errorReason: null };
+
+	const manual = parseManualImagePostForBax(text);
+	if (!manual) {
+		return { toLog: [], errorReason: `texte non reconnu: ${text.slice(0, 1000)}` };
+	}
+
+	// Lecture directe de la carte image (OCR) en priorité -- ne dépend pas de
+	// l'heure de dispo, donc insensible aux collisions de créneau (plusieurs
+	// boosts indépendants à la même heure). Limité aux posts à une seule
+	// jambe : une carte combo (X2/X3) est en réalité plusieurs images dans un
+	// album Telegram, non gérée ici. Repli sur le recoupement par digest si
+	// l'OCR échoue, est ambigu, ou pour Betclic/Bet365/combos.
+	let ocr = null;
+	if (photoFileId && manual.legCount === 1) {
+		ocr = await ocrBoostedOddsImage(env, photoFileId);
+	}
+	if (ocr) {
+		return {
+			toLog: [
+				{
+					eventName: ocr.eventName,
+					description: ocr.description,
+					odds: ocr.odds,
+					stake: manual.stake,
+					bookmaker: manual.bookmaker,
+					sport: manual.sport,
+				},
+			],
+			errorReason: null,
+		};
+	}
+	if (manual.bookmaker !== 'winamax' && manual.bookmaker !== 'unibet') {
+		// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu tant
+		// qu'un premier cas réel ne nous donne pas de format à gérer (cf.
+		// passation.md).
+		return { toLog: [], errorReason: `post manuel ${manual.bookmaker} non géré (OCR échoué, pas de source de recoupement): ${text.slice(0, 1000)}` };
+	}
+	const matches = manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
+	if (!matches) {
+		return {
+			toLog: [],
+			errorReason: `post manuel non recoupé (OCR échoué, kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`,
+		};
+	}
+	return {
+		toLog: matches.map((match) => ({
+			eventName: match.eventName,
+			description: match.description,
+			odds: String(match.newOdds),
+			stake: manual.stake,
+			bookmaker: manual.bookmaker,
+			sport: manual.sport,
+		})),
+		errorReason: null,
+	};
 }
 
 // Compétitions continentales -> drapeau européen. Championnats nationaux ->
@@ -5709,73 +5792,25 @@ export default {
 				// vérification bi-hebdomadaire avec marge de rattrapage.
 				const auditKey = `paidmsg:${todayKey()}:${msg.message_id}`;
 				const auditTtl = { expirationTtl: 60 * 24 * 60 * 60 };
+				const photo = msg.photo && msg.photo.length ? msg.photo[msg.photo.length - 1] : null;
 				await env.SEEN_BOOSTS.put(
 					auditKey,
-					JSON.stringify({ ts: Date.now(), messageId: msg.message_id, hasPhoto: !!(msg.photo && msg.photo.length), rawText: text.slice(0, 500), status: 'received' }),
+					JSON.stringify({
+						ts: Date.now(),
+						messageId: msg.message_id,
+						hasPhoto: !!photo,
+						photoFileId: photo?.file_id || null,
+						rawText: text.slice(0, 500),
+						status: 'received',
+					}),
 					auditTtl
 				);
 				let auditResult = { status: 'error', reason: 'exception avant traitement' };
 				try {
-					let toLog = [];
-					const auto = parseChannelPostForBax(text);
-					if (auto) {
-						toLog = [auto];
-					} else {
-						const manual = parseManualImagePostForBax(text);
-						if (!manual) {
-							const reason = `texte non reconnu: ${text.slice(0, 1000)}`;
-							await logError(env, 'telegram-webhook:bax-parse', reason);
-							auditResult = { status: 'error', reason };
-						} else {
-							// Lecture directe de la carte image (OCR) en priorité -- ne
-							// dépend pas de l'heure de dispo, donc insensible aux
-							// collisions de créneau (plusieurs boosts indépendants à la
-							// même heure). Limité aux posts à une seule jambe : une carte
-							// combo (X2/X3) est en réalité plusieurs images dans un album
-							// Telegram, non gérée ici. Repli sur le recoupement par digest
-							// si l'OCR échoue, est ambigu, ou pour Betclic/Bet365/combos.
-							const photo = msg.photo && msg.photo.length ? msg.photo[msg.photo.length - 1] : null;
-							let ocr = null;
-							if (photo && manual.legCount === 1) {
-								ocr = await ocrBoostedOddsImage(env, photo.file_id);
-							}
-							if (ocr) {
-								toLog = [
-									{
-										eventName: ocr.eventName,
-										description: ocr.description,
-										odds: ocr.odds,
-										stake: manual.stake,
-										bookmaker: manual.bookmaker,
-										sport: manual.sport,
-									},
-								];
-							} else if (manual.bookmaker !== 'winamax' && manual.bookmaker !== 'unibet') {
-								// Pas de digest côté Betclic/Bet365 pour recouper -- inconnu
-								// tant qu'un premier cas réel ne nous donne pas de format à
-								// gérer (cf. passation.md).
-								const reason = `post manuel ${manual.bookmaker} non géré (OCR échoué, pas de source de recoupement): ${text.slice(0, 1000)}`;
-								await logError(env, 'telegram-webhook:bax-parse', reason);
-								auditResult = { status: 'error', reason };
-							} else {
-								const matches =
-									manual.bookmaker === 'winamax' ? await findWinamaxDigestMatch(env, manual) : await findUnibetDigestMatch(env, manual);
-								if (!matches) {
-									const reason = `post manuel non recoupé (OCR échoué, kickoff=${manual.kickoff}, legCount=${manual.legCount}): ${text.slice(0, 1000)}`;
-									await logError(env, 'telegram-webhook:bax-parse', reason);
-									auditResult = { status: 'error', reason };
-								} else {
-									toLog = matches.map((match) => ({
-										eventName: match.eventName,
-										description: match.description,
-										odds: String(match.newOdds),
-										stake: manual.stake,
-										bookmaker: manual.bookmaker,
-										sport: manual.sport,
-									}));
-								}
-							}
-						}
+					const { toLog, errorReason } = await resolveToLogEntries(env, text, photo?.file_id || null);
+					if (errorReason) {
+						await logError(env, 'telegram-webhook:bax-parse', errorReason);
+						auditResult = { status: 'error', reason: errorReason };
 					}
 					if (toLog.length) {
 						const logged = [];
@@ -5801,7 +5836,8 @@ export default {
 					JSON.stringify({
 						ts: Date.now(),
 						messageId: msg.message_id,
-						hasPhoto: !!(msg.photo && msg.photo.length),
+						hasPhoto: !!photo,
+						photoFileId: photo?.file_id || null,
 						rawText: text.slice(0, 500),
 						...auditResult,
 					}),
@@ -5878,6 +5914,106 @@ export default {
 			}
 			entries.sort((a, b) => a.ts - b.ts);
 			return new Response(JSON.stringify({ from, to, count: entries.length, entries }), { headers: { 'Content-Type': 'application/json' } });
+		}
+
+		if (url.pathname === '/debug-webhook-info') {
+			// Vérifie la santé du webhook Telegram lui-même (pending_update_count,
+			// dernière erreur de livraison...) -- diagnostic pour distinguer "le
+			// webhook tourne mais un post précis échoue au parsing" (visible dans
+			// la piste d'audit) de "le webhook ne reçoit plus rien du tout" (invisible
+			// autrement, aucune piste d'audit écrite si le webhook ne se déclenche pas).
+			if (!env.DEBUG_TOKEN || request.headers.get('x-debug-token') !== env.DEBUG_TOKEN) {
+				return new Response('forbidden', { status: 403 });
+			}
+			const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getWebhookInfo`);
+			const body = await res.text();
+			return new Response(body, { headers: { 'Content-Type': 'application/json' } });
+		}
+
+		if (url.pathname === '/retry-paid-post' && request.method === 'POST') {
+			// Rattrapage manuel d'un post du canal payant resté en erreur (OCR ET
+			// recoupement digest tous deux en échec, ex: collision de créneau).
+			// Réutilise le file_id stocké dans la piste d'audit -- pas besoin de
+			// redemander la capture à l'utilisatrice. "override" permet de trancher
+			// une ambiguïté à la main (elle confirme le bon candidat) sans dépendre
+			// de l'OCR/digest. Jamais automatique, gardé derrière le même jeton que
+			// les autres routes sensibles (crée un vrai pari dans bet-analytix).
+			if (!env.DEBUG_TOKEN || request.headers.get('x-debug-token') !== env.DEBUG_TOKEN) {
+				return new Response('forbidden', { status: 403 });
+			}
+			const body = await request.json().catch(() => null);
+			const date = body?.date;
+			const messageId = body?.messageId;
+			const override = body?.override;
+			if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !messageId) {
+				return new Response(
+					'usage: {"date":"YYYY-MM-DD","messageId":123,"override":{"eventName":"...","description":"...","odds":"2,40"}} (override optionnel)',
+					{ status: 400 }
+				);
+			}
+			const auditKey = `paidmsg:${date}:${messageId}`;
+			const raw = await env.SEEN_BOOSTS.get(auditKey);
+			if (!raw) {
+				return new Response(JSON.stringify({ error: "entrée introuvable dans la piste d'audit" }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+			}
+			const entry = JSON.parse(raw);
+			if (entry.status === 'logged') {
+				return new Response(JSON.stringify({ error: 'déjà loggé, refuse de créer un doublon', entry }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+			}
+			let toLog = [];
+			let errorReason = null;
+			if (override?.eventName && override?.description && override?.odds) {
+				const manual = parseManualImagePostForBax(entry.rawText);
+				if (!manual) {
+					return new Response(JSON.stringify({ error: 'impossible de reparser stake/bookmaker/sport depuis le texte stocké' }), {
+						status: 400,
+						headers: { 'Content-Type': 'application/json' },
+					});
+				}
+				toLog = [
+					{
+						eventName: override.eventName,
+						description: override.description,
+						odds: String(override.odds),
+						stake: manual.stake,
+						bookmaker: manual.bookmaker,
+						sport: manual.sport,
+					},
+				];
+			} else {
+				const result = await resolveToLogEntries(env, entry.rawText, entry.photoFileId);
+				toLog = result.toLog;
+				errorReason = result.errorReason;
+			}
+			if (!toLog.length) {
+				return new Response(JSON.stringify({ ok: false, error: errorReason || 'toujours pas résolu' }), { headers: { 'Content-Type': 'application/json' } });
+			}
+			const logged = [];
+			for (const parsed of toLog) {
+				const logRes = await env.BAX_WORKER.fetch('https://bet-analytix-sync/log', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(parsed),
+				});
+				const logJson = await logRes.json().catch(() => null);
+				const betId = logJson?.created?.[0]?.id ?? null;
+				logged.push({ ...parsed, betId, logOk: logRes.ok });
+			}
+			const newStatus = logged.every((l) => l.logOk && l.betId) ? 'logged' : 'error';
+			await env.SEEN_BOOSTS.put(
+				auditKey,
+				JSON.stringify({
+					ts: entry.ts,
+					messageId: entry.messageId,
+					hasPhoto: entry.hasPhoto,
+					photoFileId: entry.photoFileId,
+					rawText: entry.rawText,
+					status: newStatus,
+					logged,
+				}),
+				{ expirationTtl: 60 * 24 * 60 * 60 }
+			);
+			return new Response(JSON.stringify({ ok: true, status: newStatus, logged }), { headers: { 'Content-Type': 'application/json' } });
 		}
 
 		if (url.pathname === '/spawn-notify' && request.method === 'POST') {
