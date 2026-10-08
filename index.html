@@ -1459,6 +1459,7 @@ async function loadOffers(){
           <div class="cond">${o['condition'] || ''}</div>
           ${offerStepsHTML(key)}
           <a class="btn-primary magnetic" href="${o['lien'] || '#'}" target="_blank" rel="noopener">S'inscrire sur ${o['Bookmaker']}</a>
+          ${key === 'celsius' ? `<a class="btn-secondary" style="width:100%;justify-content:center;margin-top:10px;" href="guide-celsius.html">Voir le guide d'inscription pas à pas →</a>` : ''}
         </div>`;
       }).join('');
       cardsEl.querySelectorAll('.offer-card').forEach(attachTilt);
